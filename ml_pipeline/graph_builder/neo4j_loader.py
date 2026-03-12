@@ -4,7 +4,7 @@ import time
 
 # Connection details for your Neo4j Docker instance
 URI = "neo4j://localhost:7687"
-AUTH = ("neo4j", "securepassword123") # Ensure this matches what you set in Docker
+AUTH = ("neo4j", "12345678") # Ensure this matches what you set in Docker
 
 def load_data():
     print("Loading CSV files into memory...")
