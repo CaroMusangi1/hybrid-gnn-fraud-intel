@@ -7,7 +7,7 @@ from sklearn.preprocessing import OneHotEncoder
 
 #  Configuration 
 URI = "neo4j://localhost:7687"
-AUTH = ("neo4j", "1234") # Update this to your actual Neo4j password!
+AUTH = ("neo4j", "12345678") # Update this to your actual Neo4j password!
 GRAPH_FILE = 'data/processed/hetero_graph.pt'
 
 # 1. Test Data Loader Function (Database Integrity)
