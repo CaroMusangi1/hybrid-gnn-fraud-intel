@@ -51,7 +51,7 @@ def test_pytorch_heterodata_structure():
     assert os.path.exists(GRAPH_FILE), f"Graph tensor file missing at {GRAPH_FILE}. Did you run graph_dataset.py?"
     
     # Load the math
-    data = torch.load(GRAPH_FILE)
+    data = torch.load(GRAPH_FILE, weights_only=False)
     
     # Assert all node types made it into the neural network
     expected_nodes = ['user', 'agent', 'device', 'institution']
