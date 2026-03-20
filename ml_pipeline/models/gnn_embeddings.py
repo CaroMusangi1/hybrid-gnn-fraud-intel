@@ -9,6 +9,8 @@ import os
 GRAPH_PATH = 'data/processed/hetero_graph.pt'
 data = torch.load(GRAPH_PATH, weights_only=False)
 
+# Make the graph undirected so information flows both ways
+data = T.ToUndirected()(data)
 #  2. Define the Neural Network Architecture (Using GraphSAGE for its inductive capabilities)
 class GNNEncoder(torch.nn.Module):
     def __init__(self, hidden_channels, out_channels):
