@@ -1,158 +1,150 @@
 import pandas as pd
 import numpy as np
-import uuid
-from datetime import datetime, timedelta
 import random
+from datetime import datetime, timedelta
 import os
 
-# Create directory
-os.makedirs('data/raw', exist_ok=True)
+print("--- Phase 1: Generating Master's-Level Synthetic Dataset ---")
 
-# Configuration
-NUM_USERS = 3000
-NUM_AGENTS = 200
-NUM_DEVICES = 2500
-NUM_TRANSACTIONS = 15000
-START_DATE = datetime(2026, 3, 1)
+# 1. GLOBAL SETTINGS (Upgraded per research)
+NUM_USERS = 10000        
+NUM_TRANSACTIONS = 100000 
+NUM_AGENTS = 400         
+NUM_DEVICES = 5000        
+FRAUD_RATE = 0.025       # 2.5% fraud rate 
 
-print("1. Generating Entities (Nodes)...")
+START_DATE = datetime(2025, 1, 1)
+DAYS = 45                # 45-day timeline for temporal depth 
 
-# Generate Devices
-devices = pd.DataFrame({
-    'device_id': [f"D_{uuid.uuid4().hex[:6]}" for _ in range(NUM_DEVICES)],
-    'is_rooted': np.random.choice([True, False], size=NUM_DEVICES, p=[0.05, 0.95])
-})
+# 2. CREATE ENTITIES
+users = [f"U_{i}" for i in range(NUM_USERS)]
+agents = [f"A_{i}" for i in range(NUM_AGENTS)]
+devices = [f"D_{i}" for i in range(NUM_DEVICES)]
 
-# Generate Users
-users = pd.DataFrame({
-    'user_id': [f"U_{uuid.uuid4().hex[:6]}" for _ in range(NUM_USERS)],
-    'account_age_days': np.random.randint(1, 1800, size=NUM_USERS),
-    'kyc_level': np.random.choice(['Tier_1', 'Tier_2', 'Tier_3'], size=NUM_USERS, p=[0.2, 0.5, 0.3]),
-    'has_defaulted': 0, # Default to 0, updated in Case 4
-    'device_id': np.random.choice(devices['device_id'], size=NUM_USERS)
-})
+# 3. HELPER FUNCTIONS
+def random_time():
+    return START_DATE + timedelta(seconds=random.randint(0, DAYS * 24 * 3600))
 
-# Generate Agents
-agents = pd.DataFrame({
-    'agent_id': [f"A_{uuid.uuid4().hex[:6]}" for _ in range(NUM_AGENTS)],
-    'agent_type': np.random.choice(['Cash_Agent', 'Business_Till'], size=NUM_AGENTS, p=[0.6, 0.4]),
-    'location': np.random.choice(['Nairobi', 'Juja', 'Kiambu', 'Mombasa', 'Nakuru'], size=NUM_AGENTS)
-})
+def random_amount():
+    return round(np.random.exponential(scale=2000), 2)
 
-# Generate Institutions
-institutions = pd.DataFrame({
-    'institution_id': ['I_FULIZA', 'I_MSHWARI'],
-    'name': ['Fuliza', 'M-Shwari']
-})
+# 4. GENERATE NORMAL TRANSACTIONS
+data = []
+num_fraud = int(NUM_TRANSACTIONS * FRAUD_RATE)
+num_normal = NUM_TRANSACTIONS - num_fraud
 
-print("2. Generating Normal Background Transactions...")
-transactions = []
-
-def add_tx(sender, receiver, tx_type, amount, timestamp, is_fraud=0, scenario='Normal'):
-    transactions.append({
-        'transaction_id': f"TX_{uuid.uuid4().hex[:8]}",
-        'sender_id': sender,
-        'receiver_id': receiver,
-        'tx_type': tx_type,
-        'amount': round(amount, 2),
-        'timestamp': timestamp,
-        'is_fraud': is_fraud,
-        'fraud_scenario': scenario
+print(f"Generating {num_normal} normal transactions...")
+for _ in range(num_normal):
+    data.append({
+        "sender_id": random.choice(users),
+        "receiver_id": random.choice(users),
+        "amount": random_amount(),
+        "timestamp": random_time(),
+        "agent_id": random.choice(agents),
+        "device_id": random.choice(devices),
+        "is_fraud": 0,
+        "fraud_scenario": "none"
     })
 
-cash_agents = agents[agents['agent_type'] == 'Cash_Agent']['agent_id'].tolist()
-business_tills = agents[agents['agent_type'] == 'Business_Till']['agent_id'].tolist()
-user_ids = users['user_id'].tolist()
+# 5. FRAUD GENERATORS (The 5 Specific Topologies)
+print(f"Injecting {num_fraud} fraudulent transactions across 5 topologies...")
 
-# Generate normal noise
-for _ in range(NUM_TRANSACTIONS):
-    tx_type = np.random.choice(['P2P_TRANSFER', 'PAYMENT', 'WITHDRAWAL', 'LOAN_DISBURSEMENT'], p=[0.4, 0.3, 0.2, 0.1])
-    sender = random.choice(user_ids)
-    tx_time = START_DATE + timedelta(minutes=random.randint(1, 20000))
-    amount = random.uniform(50, 15000)
-    
-    if tx_type == 'P2P_TRANSFER':
-        add_tx(sender, random.choice(user_ids), tx_type, amount, tx_time)
-    elif tx_type == 'PAYMENT':
-        add_tx(sender, random.choice(business_tills), tx_type, amount, tx_time)
-    elif tx_type == 'WITHDRAWAL':
-        add_tx(sender, random.choice(cash_agents), tx_type, amount, tx_time)
-    elif tx_type == 'LOAN_DISBURSEMENT':
-        add_tx(random.choice(['I_FULIZA', 'I_MSHWARI']), sender, tx_type, amount, tx_time)
+def generate_fraud_ring(size=4):
+    nodes = random.sample(users, size)
+    for i in range(size):
+        data.append({
+            "sender_id": nodes[i],
+            "receiver_id": nodes[(i + 1) % size],
+            "amount": random_amount() * 5,
+            "timestamp": random_time(),
+            "agent_id": random.choice(agents),
+            "device_id": random.choice(devices),
+            "is_fraud": 1,
+            "fraud_scenario": "fraud_ring"
+        })
 
-print("3. Injecting Topologically Complex Fraud Rings...")
+def generate_mule_cluster(size=5):
+    device = random.choice(devices) # Shared device
+    central = random.choice(users)
+    for _ in range(size):
+        data.append({
+            "sender_id": random.choice(users),
+            "receiver_id": central,
+            "amount": random_amount(),
+            "timestamp": random_time(),
+            "agent_id": random.choice(agents),
+            "device_id": device,
+            "is_fraud": 1,
+            "fraud_scenario": "mule_sim_swap"
+        })
 
-#  Case 1: Agent Reversal Scam (Cycle -> Fan-in -> Reversal) 
-c1_users = random.sample(user_ids, 5) # A, B, C, D, E
-c1_time = START_DATE + timedelta(days=2)
-# Layering (Cycle)
-add_tx(c1_users[0], c1_users[1], 'P2P_TRANSFER', 40000, c1_time, 1, 'Case_1_Reversal')
-add_tx(c1_users[1], c1_users[2], 'P2P_TRANSFER', 39500, c1_time + timedelta(minutes=5), 1, 'Case_1_Reversal')
-add_tx(c1_users[2], c1_users[3], 'P2P_TRANSFER', 39000, c1_time + timedelta(minutes=10), 1, 'Case_1_Reversal')
-# Fan-in & Cashout
-add_tx(c1_users[3], c1_users[4], 'P2P_TRANSFER', 38500, c1_time + timedelta(minutes=15), 1, 'Case_1_Reversal')
-add_tx(c1_users[4], random.choice(cash_agents), 'WITHDRAWAL', 38000, c1_time + timedelta(minutes=20), 1, 'Case_1_Reversal')
-# Reversal Request from Victim A against B
-add_tx(c1_users[0], c1_users[1], 'REVERSAL_REQUEST', 40000, c1_time + timedelta(minutes=25), 1, 'Case_1_Reversal')
+def generate_fast_cashout(size=5):
+    origin = random.choice(users)
+    base_time = random_time()
+    for _ in range(size):
+        data.append({
+            "sender_id": origin,
+            "receiver_id": random.choice(users),
+            "amount": random_amount() * 3,
+            "timestamp": base_time + timedelta(seconds=random.randint(0, 60)), # Burst!
+            "agent_id": random.choice(agents),
+            "device_id": random.choice(devices),
+            "is_fraud": 1,
+            "fraud_scenario": "fast_cashout"
+        })
 
-#  Case 2: Mule Accounts & SIM Swap (Shared Device Star Topology) 
-coordinator = random.choice(user_ids)
-# Select 10 users to act as mules and force them onto the SAME device (synthetic identity clustering)
-mules = random.sample(user_ids, 10)
-shared_device = "D_FRAUD_999"
-users.loc[users['user_id'].isin(mules), 'device_id'] = shared_device
-users.loc[users['user_id'].isin(mules), 'account_age_days'] = random.randint(1, 3) # Brand new accounts
+def generate_loan_cluster(size=5):
+    cluster = random.sample(users, size)
+    for u1 in cluster:
+        for u2 in cluster:
+            if u1 != u2:
+                data.append({
+                    "sender_id": u1,
+                    "receiver_id": u2,
+                    "amount": random_amount(),
+                    "timestamp": random_time(),
+                    "agent_id": random.choice(agents),
+                    "device_id": random.choice(devices),
+                    "is_fraud": 1,
+                    "fraud_scenario": "loan_fraud"
+                })
 
-c2_time = START_DATE + timedelta(days=5)
-for mule in mules:
-    # Mules send to coordinator
-    add_tx(mule, coordinator, 'P2P_TRANSFER', random.uniform(5000, 10000), c2_time + timedelta(minutes=random.randint(1,60)), 1, 'Case_2_Mule_SIM_Swap')
+def generate_business_fraud(size=5):
+    u1, u2 = random.choice(users), random.choice(users)
+    for _ in range(size):
+        data.append({
+            "sender_id": u1,
+            "receiver_id": u2,
+            "amount": random_amount(),
+            "timestamp": random_time(),
+            "agent_id": random.choice(agents),
+            "device_id": random.choice(devices),
+            "is_fraud": 1,
+            "fraud_scenario": "business_fraud"
+        })
 
-#  Case 3: Stolen Identity to Fast Cash-out Explosion 
-victim = random.choice(user_ids)
-fast_mules = random.sample(user_ids, 5)
-c3_time = START_DATE + timedelta(days=7)
+# 6. DISTRIBUTE FRAUD TYPES
+fraud_counts = {
+    "fraud_ring": int(0.25 * num_fraud),      # 25% 
+    "mule": int(0.20 * num_fraud),            # 20% 
+    "fast_cashout": int(0.20 * num_fraud),    # 20% 
+    "loan_fraud": int(0.15 * num_fraud),      # 15% 
+    "business_fraud": int(0.20 * num_fraud)   # 20% 
+}
 
-for mule in fast_mules:
-    # Explosive star: within 60 seconds
-    tx_time = c3_time + timedelta(seconds=random.randint(1, 60))
-    add_tx(victim, mule, 'P2P_TRANSFER', 15000, tx_time, 1, 'Case_3_Fast_Cashout')
-    # Immediate withdrawal within 2 minutes of receiving
-    add_tx(mule, random.choice(cash_agents), 'WITHDRAWAL', 14900, tx_time + timedelta(seconds=random.randint(60, 120)), 1, 'Case_3_Fast_Cashout')
+# Inject the exact mathematical proportions
+for _ in range(fraud_counts["fraud_ring"] // 4): generate_fraud_ring()
+for _ in range(fraud_counts["mule"] // 5): generate_mule_cluster()
+for _ in range(fraud_counts["fast_cashout"] // 5): generate_fast_cashout()
+for _ in range(fraud_counts["loan_fraud"] // 10): generate_loan_cluster()
+for _ in range(fraud_counts["business_fraud"] // 5): generate_business_fraud()
 
-#  Case 4: Synecdoche Circles (Loan Fraud / Homophily) 
-loan_fraudsters = random.sample(user_ids, 8)
-c4_time = START_DATE + timedelta(days=10)
+# 7. EXPORT TO CSV
+df = pd.DataFrame(data)
+df = df.sample(frac=1).reset_index(drop=True) # Shuffle the timeline
 
-# Create dense covert community (Homophily)
-for _ in range(25):
-    add_tx(random.choice(loan_fraudsters), random.choice(loan_fraudsters), 'P2P_TRANSFER', random.uniform(500, 2000), c4_time + timedelta(hours=random.randint(1, 48)), 1, 'Case_4_Loan_Fraud')
+os.makedirs('data/raw', exist_ok=True)
+df.to_csv("data/raw/p2p_transfers.csv", index=False)
 
-# Borrow and vanish
-for fraudster in loan_fraudsters:
-    add_tx('I_FULIZA', fraudster, 'LOAN_DISBURSEMENT', random.uniform(5000, 20000), c4_time + timedelta(hours=50), 1, 'Case_4_Loan_Fraud')
-    # Update Node attribute to reflect default
-    users.loc[users['user_id'] == fraudster, 'has_defaulted'] = 1
-
-#  Case 5: Fraudulent Business Till Transactions (Densification) 
-corrupt_till = random.choice(business_tills)
-till_washers = random.sample(user_ids, 3)
-c5_time = START_DATE + timedelta(days=12)
-
-# Inflate volume rapidly over 2 days
-for _ in range(40):
-    washer = random.choice(till_washers)
-    tx_time = c5_time + timedelta(hours=random.randint(1, 48))
-    add_tx(washer, corrupt_till, 'PAYMENT', random.uniform(40000, 90000), tx_time, 1, 'Case_5_Till_Inflation')
-
-# Convert to DataFrame
-tx_df = pd.DataFrame(transactions)
-
-print("4. Saving Data to /data/raw/ ...")
-users.to_csv('data/raw/users.csv', index=False)
-agents.to_csv('data/raw/agents.csv', index=False)
-devices.to_csv('data/raw/devices.csv', index=False)
-institutions.to_csv('data/raw/institutions.csv', index=False)
-tx_df.to_csv('data/raw/transactions.csv', index=False)
-
-print(f"Success! Generated {len(tx_df)} transactions spanning Normal and 5 Fraud Topologies.")
+print("\nSuccess! Generated 100,000 transactions.")
+print("Saved to: data/raw/p2p_transfers.csv")
