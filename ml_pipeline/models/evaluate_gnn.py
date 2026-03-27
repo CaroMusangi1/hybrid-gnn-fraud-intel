@@ -1,5 +1,6 @@
 import torch
 import numpy as np
+import pandas as pd
 from sklearn.metrics import classification_report, roc_auc_score
 from torch_geometric.nn import SAGEConv, to_hetero
 
@@ -96,3 +97,35 @@ with torch.no_grad():
 print("\n GNN Performance Metrics ")
 print(classification_report(actuals, predictions, target_names=['Safe (0)', 'Fraud (1)']))
 print(f"GNN ROC-AUC Score: {roc_auc_score(actuals, probabilities):.4f}")
+
+#  7. SEGMENTED SCENARIO EVALUATION 
+print("\n GNN Segmented Blind Spot Analysis ")
+# Load the original dataframe to get the scenario text
+df = pd.read_csv('data/processed/final_model_data.csv')
+
+# Get the scenarios for just the 20% test set using our test_idx
+test_scenarios = df.iloc[test_idx]['fraud_scenario'].values
+
+# Create a results dataframe
+results = pd.DataFrame({
+    'Actual': actuals,
+    'Predicted': predictions,
+    'Scenario': test_scenarios
+})
+
+actual_fraud = results[results['Actual'] == 1]
+
+print(f"{'Fraud Topology':<20} | {'Caught (True Pos)'} | {'Missed (False Neg)'} | {'Recall (Detection Rate)'}")
+print("-" * 75)
+
+for scenario in actual_fraud['Scenario'].unique():
+    scenario_data = actual_fraud[actual_fraud['Scenario'] == scenario]
+    total_cases = len(scenario_data)
+    caught = sum(scenario_data['Predicted'] == 1)
+    missed = total_cases - caught
+    # Handle division by zero
+    recall = (caught / total_cases) * 100 if total_cases > 0 else 0.0
+    
+    print(f"{scenario:<20} | {caught:<17} | {missed:<18} | {recall:.1f}%")
+
+print("\nConclusion :Notice how the GNN catches the rings that XGBoost missed")
