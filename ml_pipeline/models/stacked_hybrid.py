@@ -109,3 +109,14 @@ safe_in_review = len(results_biz[(results_biz['Actual'] == 0) & (results_biz['De
 print(f"\nAnalyst Workload: There are {safe_in_review} innocent transactions mixed into the Review Queue.")
 print("The human analyst acts as the ultimate filter to protect Precision")
 
+# 8. HANDOFF TO TIER 2 (Export the Review Queue)
+# We isolate only the transactions that the model was unsure about
+review_indices = results_biz[results_biz['Decision'] == 'MANUAL_REVIEW'].index
+review_queue = X_test.loc[review_indices].copy()
+review_queue['Probability'] = results_biz.loc[review_indices, 'Probability']
+review_queue['Actual'] = results_biz.loc[review_indices, 'Actual']
+review_queue['fraud_scenario'] = scen_test.loc[review_indices]
+
+# Save it for the AI Analyst Agent
+review_queue.to_csv('data/processed/review_queue.csv', index=False)
+print("\n-> Pipeline Handoff: Saved Review Queue to 'review_queue.csv' for the AI Analyst.")
