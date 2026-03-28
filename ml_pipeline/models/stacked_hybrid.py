@@ -29,15 +29,16 @@ X_train, X_test, y_train, y_test, scen_train, scen_test = train_test_split(
     X, y, scenarios, test_size=0.2, random_state=42, stratify=y
 )
 
-# 5. Train the Stacked XGBoost
-print(f"Training STACKED XGBoost on {len(X_train)} transactions...")
+# 5. Train the TUNED Stacked XGBoost
+print(f"Training TUNED STACKED XGBoost on {len(X_train)} transactions...")
 pos_weight = (len(y_train) - sum(y_train)) / sum(y_train)
 
 stacked_model = XGBClassifier(
-    n_estimators=100, 
-    max_depth=6, 
-    learning_rate=0.1, 
-    scale_pos_weight=pos_weight, 
+    n_estimators=150,           # Giving it more trees to learn complex relationships
+    max_depth=4,                # THE FIX: Shallower trees prevent it from over-relying on exact amounts
+    learning_rate=0.05,         # Slower, more careful learning
+    colsample_bytree=0.6,       # THE FIX: Randomly hide 40% of columns so it is FORCED to use the GNN score
+    scale_pos_weight=pos_weight * 1.5, # THE FIX: Tell XGBoost that missing a fraudster is 1.5x worse than normal
     random_state=42,
     eval_metric='logloss'
 )
