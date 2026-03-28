@@ -1,6 +1,6 @@
 import pandas as pd
 
-print("=== TIER 2: AUTONOMOUS AI FRAUD ANALYST ===")
+print(" TIER 2: AUTONOMOUS AI FRAUD ANALYST ")
 print("Loading the Manual Review Queue from Tier 1 (Stacked Hybrid)...")
 
 try:
