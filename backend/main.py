@@ -10,13 +10,13 @@ app = FastAPI(title="M-Pesa Fraud Intelligence API", version="1.0")
 
 # Neo4j Connection (Update with your local credentials)
 URI = "neo4j://localhost:7687"
-AUTH = ("neo4j", "password123")
+AUTH = ("neo4j", "12345678")
 driver = GraphDatabase.driver(URI, auth=AUTH)
 
 # Load the trained Hybrid Meta-Learner (Tier 1)
 # NOTE: Make sure you export your trained model from Week 5 to a .pkl file!
 try:
-    with open("models/saved/hybrid_xgboost.pkl", "rb") as f:
+    with open("ml_pipeline/models/saved/hybrid_xgboost.pkl", "rb") as f:
         hybrid_model = pickle.load(f)
 except FileNotFoundError:
     print("Warning: Model file not found. API will fail on prediction.")

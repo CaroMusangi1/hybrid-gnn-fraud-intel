@@ -1,5 +1,11 @@
 from fastapi.testclient import TestClient
-from api.main import app
+import sys
+import os
+
+# Add the parent directory to Python path so we can import backend
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from backend.main import app
 
 # This creates a dummy browser to hit your API locally
 client = TestClient(app)
