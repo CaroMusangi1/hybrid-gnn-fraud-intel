@@ -6,7 +6,7 @@ print("Initializing Neo4j Graph Population ")
 
 # 1. Update these with your actual Neo4j Desktop credentials!
 URI = "neo4j://localhost:7687"
-AUTH = ("neo4j", "password123")  # Replace 'password123' with your DB password
+AUTH = ("neo4j", "12345678")  # Replace 'password123' with your DB password
 
 def clear_database(session):
     """Wipes the database clean so we don't accidentally double-load data."""
