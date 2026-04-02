@@ -348,4 +348,6 @@ or
  3. Run Integration Tests
   Simulates a full Request -> DB -> Model -> Response pipeline
  run :python tests/test_api.py
- 
+
+ well more information. I did a graph update by changing Cypher Query so it simulataneously updates the graph with the new transaction beofre it makes prediction. This makes the system a Dynamic Graph API. Every time a transaction hits the /predict endpoint, he Neo4j web actually grows in real-time, making the GNN and XGBoost smarter with every single request.
+ This fully checks off Database query → graph update → prediction.
