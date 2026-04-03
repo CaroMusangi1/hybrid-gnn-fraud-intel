@@ -322,7 +322,7 @@ This confirms that combining GNN (for recall) and XGBoost (for precision) is the
 
 Successful tests -Test forward pass, Test embedding dimensions , Test loss computation ,Test inference on small dataset.
 
-## CARO HAS PENDING WORK KINDLY REVISIT AND UPDATE THIS BIT.
+## CARO Kitonga HAS PENDING WORK KINDLY REVISIT AND UPDATE THIS BIT.
 
 PHASE 3: INTEGRATION PHASE:
 backend + Model Integration.
