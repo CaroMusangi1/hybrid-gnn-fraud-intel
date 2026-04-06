@@ -1,23 +1,23 @@
 from fastapi import FastAPI, HTTPException
-from fastapi.middleware.cors import CORSMiddleware # <-- Added for React Integration
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from neo4j import GraphDatabase
 import pandas as pd
 import xgboost as xgb
-import pickle # saved my XGBoost model as a .pkl file
-import os # Added to fix the pathing issue
+import pickle
+import os
 
-#  1. INITIALIZE APP & CONNECTIONS 
+# 1. INITIALIZE APP & CONNECTIONS 
 app = FastAPI(title="M-Pesa Fraud Intelligence API", version="1.0")
 
 # CORS MIDDLEWARE BLOCK 
 # This allows your React frontend (port 5173) to talk to FastAPI (port 8000)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Allows all origins
+    allow_origins=["*"],
     allow_credentials=True,
-    allow_methods=["*"],  # Allows all methods (POST, GET, etc.)
-    allow_headers=["*"],  # Allows all headers
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 
@@ -29,7 +29,6 @@ driver = GraphDatabase.driver(URI, auth=AUTH)
 # Load the trained Hybrid Meta-Learner (Tier 1)
 # Dynamically find the absolute path to your main project folder
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-# Based on your script output, it saved to 'models/saved/hybrid_xgboost.pkl'
 MODEL_PATH = os.path.join(BASE_DIR, "models", "saved", "hybrid_xgboost.pkl")
 
 try:
@@ -40,8 +39,7 @@ except FileNotFoundError:
     print(f"Warning: Model file not found at {MODEL_PATH}. API will fail on prediction.")
 
 
-#  2. DEFINE DATA SCHEMAS (Pydantic) 
-# This forces the incoming API requests to have exactly these fields
+# 2. DEFINE DATA SCHEMAS (Pydantic) 
 class TransactionRequest(BaseModel):
     transaction_id: str
     sender_id: str
@@ -53,10 +51,10 @@ class TransactionRequest(BaseModel):
 class PredictionResponse(BaseModel):
     transaction_id: str
     risk_score: float
-    decision: str # AUTO_FREEZE, REQUIRE_HUMAN, AUTO_CLEARED_SAFE
+    decision: str 
     reason: str
 
-#  3. THE AI ANALYST BUSINESS LOGIC (Tier 2) 
+# 3. THE AI ANALYST BUSINESS LOGIC (Tier 2) 
 def apply_ai_analyst(amount: float, velocity: int, risk_score: float) -> tuple[str, str]:
     """Applies the Kenyan M-Pesa rules to the Hybrid model's risk score."""
     if risk_score >= 0.85:
@@ -72,7 +70,7 @@ def apply_ai_analyst(amount: float, velocity: int, risk_score: float) -> tuple[s
     else:
         return "REQUIRE_HUMAN", "Ambiguous pattern. Manual review required."
 
-#  4. API ENDPOINTS 
+# 4. API ENDPOINTS 
 
 @app.post("/predict", response_model=PredictionResponse)
 async def predict_fraud(tx: TransactionRequest):
@@ -101,7 +99,6 @@ async def predict_fraud(tx: TransactionRequest):
     
     try:
         with driver.session() as session:
-            # Execute the query with all necessary variables passed in
             result = session.run(
                 cypher_query, 
                 sender_id=tx.sender_id,
@@ -112,28 +109,41 @@ async def predict_fraud(tx: TransactionRequest):
             record = result.single()
             num_unique_recipients = record["num_unique_recipients"] if record else 0
             
-            # (In a real system, I would also fetch THE GNN score or PageRank here)
-            # For this example, we will mock the GNN score
             mock_gnn_score = 0.45 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Neo4j Database Error: {str(e)}")
 
-    # 2. Build the exact feature row your XGBoost model expects
+    # 2. Build the exact feature row our XGBoost model expects
+    # XGBoost demands these exact 16 columns in this specific order.
+    # We use live data where possible, simple logic for flags, and mock the deep graph metrics.
     features = pd.DataFrame([{
         "amount": tx.amount,
-        "transactions_last_24hr": tx.transactions_last_24hr,
-        "hour": tx.hour,
-        "num_unique_recipients": num_unique_recipients,
-        "gnn_fraud_risk_score": mock_gnn_score 
-        # Add the rest of your 10 features here...
+        "num_accounts_linked": 1,                      # Mock: Normal user usually has 1 account
+        "shared_device_flag": 0,                       # Mock: 0 = No, 1 = Yes
+        "avg_transaction_amount": 1500.0,              # Mock: Average historical amount
+        "transaction_frequency": 2,                    # Mock: Weekly frequency
+        "num_unique_recipients": num_unique_recipients,# LIVE: From Neo4j
+        "transactions_last_24hr": tx.transactions_last_24hr, # LIVE: From React
+        "round_amount_flag": 1 if tx.amount % 100 == 0 else 0, # Logic: 1 if amount is exactly 500, 1000, etc.
+        "hour": tx.hour,                               # LIVE: From React
+        "night_activity_flag": 1 if tx.hour < 5 else 0,# Logic: 1 if before 5 AM
+        "triad_closure_score": 0.1,                    # Mock: Graph metric
+        "pagerank_score": 0.005,                       # Mock: Graph metric
+        "in_degree": 2,                                # Mock: Graph metric
+        "out_degree": num_unique_recipients,           # Logic: Matches unique recipients
+        "cycle_indicator": 0,                          # Mock: Graph metric (1 = likely wash-wash cycle)
+        "gnn_fraud_risk_score": mock_gnn_score         # Mock: 0.45 from earlier in the script
     }])
 
     # 3. Model Inference
     try:
+        # Let's try to run the real math!
         risk_score = hybrid_model.predict_proba(features)[0][1]
+        print(f"✅ XGBoost Calculation Success! Real Risk Score: {risk_score}")
     except Exception as e:
-         # Fallback if model isn't loaded properly for this demo
-         risk_score = 0.65 
+         # If it fails, we print the EXACT error to the terminal so we can fix it
+         print(f"❌ XGBoost Feature Mismatch Error: {str(e)}") 
+         risk_score = 0.65 # Fallback
 
     # 4. Tier 2 AI Analyst Decision
     decision, reason = apply_ai_analyst(tx.amount, tx.transactions_last_24hr, risk_score)
@@ -148,7 +158,6 @@ async def predict_fraud(tx: TransactionRequest):
 @app.get("/alert")
 async def get_alerts():
     """Endpoint for the front-end dashboard to fetch the Review Queue."""
-    # In reality, I would query a database table where I save "REQUIRE_HUMAN" tickets.
     return {
         "status": "success",
         "active_alerts": 142,
