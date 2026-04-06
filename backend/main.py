@@ -171,7 +171,7 @@ async def predict_fraud(tx: TransactionRequest):
     decision, reason = apply_ai_analyst(tx.amount, tx.transactions_last_24hr, risk_score)
     final_score_percentage = round(risk_score * 100, 1)
 
-    #  NEW: SAVE TO SQLITE DATABASE
+    #   SAVE TO SQLITE DATABASE
     conn = sqlite3.connect("fraud_intel.db")
     cursor = conn.cursor()
     cursor.execute("""
@@ -240,9 +240,9 @@ async def get_dashboard_stats():
             "rate": round((fraud_tx / total_tx * 100), 1) if total_tx > 0 else 0
         },
         "pie": [
-            {"name": "Low Risk", "value": low_risk if low_risk > 0 else 1, "color": "#10b981"},
-            {"name": "Medium Risk", "value": medium_risk if medium_risk > 0 else 1, "color": "#f59e0b"},
-            {"name": "High Risk", "value": high_risk if high_risk > 0 else 1, "color": "#ef4444"}
+            {"name": "Low Risk", "value": low_risk, "color": "#10b981"},
+            {"name": "Medium Risk", "value": medium_risk, "color": "#f59e0b"},
+            {"name": "High Risk", "value": high_risk, "color": "#ef4444"}
         ],
         "alerts": recent_alerts
     }
