@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from neo4j import GraphDatabase
@@ -200,21 +200,23 @@ async def get_dashboard_stats():
     cursor.execute("SELECT COUNT(*) FROM transactions")
     total_tx = cursor.fetchone()[0]
 
-    cursor.execute("SELECT COUNT(*) FROM transactions WHERE decision != 'AUTO_CLEARED_SAFE'")
+    # ONLY count pending/confirmed fraud items (excludes resolved items)
+    cursor.execute("SELECT COUNT(*) FROM transactions WHERE decision IN ('CONFIRMED_FRAUD', 'AUTO_FREEZE', 'REQUIRE_HUMAN')")
     fraud_tx = cursor.fetchone()[0]
 
-    # Get risk distribution for pie chart
-    cursor.execute("SELECT COUNT(*) FROM transactions WHERE decision = 'AUTO_CLEARED_SAFE'")
+    # Get risk distribution for pie chart (incorporating resolved statuses)
+    cursor.execute("SELECT COUNT(*) FROM transactions WHERE decision IN ('AUTO_CLEARED_SAFE', 'RESOLVED_SAFE')")
     low_risk = cursor.fetchone()[0]
     cursor.execute("SELECT COUNT(*) FROM transactions WHERE decision = 'REQUIRE_HUMAN'")
     medium_risk = cursor.fetchone()[0]
-    cursor.execute("SELECT COUNT(*) FROM transactions WHERE decision = 'CONFIRMED_FRAUD' OR decision = 'AUTO_FREEZE'")
+    cursor.execute("SELECT COUNT(*) FROM transactions WHERE decision IN ('CONFIRMED_FRAUD', 'AUTO_FREEZE', 'RESOLVED_FRAUD')")
     high_risk = cursor.fetchone()[0]
 
-    # Get recent alerts (only suspicious ones)
+    # Get recent alerts (Strictly excluding anything marked as safe or resolved)
     cursor.execute("""
         SELECT transaction_id, sender_id, receiver_id, amount, risk_score, decision 
-        FROM transactions WHERE decision != 'AUTO_CLEARED_SAFE' 
+        FROM transactions 
+        WHERE decision IN ('CONFIRMED_FRAUD', 'AUTO_FREEZE', 'REQUIRE_HUMAN')
         ORDER BY timestamp DESC LIMIT 4
     """)
     recent_rows = cursor.fetchall()
@@ -246,3 +248,16 @@ async def get_dashboard_stats():
         ],
         "alerts": recent_alerts
     }
+    
+# RESOLVE ALERT ENDPOINT
+@app.post("/resolve-alert/{tx_id}")
+async def resolve_alert(tx_id: str, action: str = Query(...)):
+    """Updates the transaction status in SQLite based on analyst decision."""
+    new_decision = "RESOLVED_SAFE" if action == "approve" else "RESOLVED_FRAUD"
+    
+    conn = sqlite3.connect("fraud_intel.db")
+    cursor = conn.cursor()
+    cursor.execute("UPDATE transactions SET decision = ? WHERE transaction_id = ?", (new_decision, tx_id))
+    conn.commit()
+    conn.close()
+    return {"status": "updated", "new_decision": new_decision}

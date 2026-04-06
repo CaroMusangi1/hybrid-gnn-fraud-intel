@@ -26,16 +26,25 @@ export default function Alerts() {
   }, []);
 
   // Simulate an analyst reviewing and resolving the ticket
-  const handleResolve = (id, action) => {
-    const updatedAlerts = alerts.filter(a => a.id !== id);
-    setAlerts(updatedAlerts);
-    if (updatedAlerts.length > 0) {
-      setSelectedAlert(updatedAlerts[0]);
-    } else {
-      setSelectedAlert(null);
+ const handleResolve = async (id, action) => {
+    try {
+      // Tell the backend to update the SQLite database
+      await axios.post(`http://127.0.0.1:8000/resolve-alert/${id}?action=${action}`);
+      
+      // Now remove it from the UI list
+      const updatedAlerts = alerts.filter(a => a.id !== id);
+      setAlerts(updatedAlerts);
+      
+      if (updatedAlerts.length > 0) {
+        setSelectedAlert(updatedAlerts[0]);
+      } else {
+        setSelectedAlert(null);
+      }
+    } catch (err) {
+      console.error("Failed to resolve alert in DB:", err);
+      alert("Error saving your decision to the database.");
     }
   };
-
   return (
     <div className="max-w-7xl mx-auto h-[calc(100vh-8rem)] flex flex-col">
       <div className="mb-6">

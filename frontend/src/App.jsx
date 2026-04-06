@@ -3,8 +3,9 @@ import Layout from './components/Layout';
 import Home from './pages/Home'; // t
 import Transactions from './pages/Transaction';
 import FraudNetwork from './pages/FraudNetwork'; 
+import Alerts from './pages/Alerts';
 
-const Alerts = () => <div><h1 className="text-2xl font-bold mb-4">Review Queue</h1></div>;
+
 
 function App() {
   return (
