@@ -261,3 +261,40 @@ async def resolve_alert(tx_id: str, action: str = Query(...)):
     conn.commit()
     conn.close()
     return {"status": "updated", "new_decision": new_decision}
+@app.get("/live-graph")
+async def get_live_graph():
+    """Fetches real transaction nodes and edges directly from Neo4j."""
+    query = """
+    MATCH (s:User)-[r:SENT_MONEY]->(t:User)
+    RETURN s.user_id AS source, t.user_id AS target, r.amount AS amount, r.transaction_id as tx_id
+    LIMIT 50
+    """
+    nodes = set()
+    links = []
+    
+    try:
+        with driver.session() as session:
+            result = session.run(query)
+            for record in result:
+                # Add nodes (using sets to avoid duplicates)
+                nodes.add(record["source"])
+                nodes.add(record["target"])
+                
+                # Determine link risk based on amount for visual flair
+                amt = record["amount"] if record["amount"] else 0
+                risk_level = "high" if amt > 50000 else "medium" if amt > 5000 else "low"
+
+                links.append({
+                    "source": record["source"],
+                    "target": record["target"],
+                    "risk": risk_level,
+                    "amount": amt
+                })
+                
+        # Format for React Force Graph
+        formatted_nodes = [{"id": n, "group": "live_user", "name": f"Neo4j Entity: {n}", "val": 15} for n in nodes]
+        
+        return {"nodes": formatted_nodes, "links": links}
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
