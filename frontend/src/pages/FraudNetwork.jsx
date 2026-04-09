@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect } from 'react';
 import ForceGraph2D from 'react-force-graph-2d';
 import axios from 'axios';
-import { Network, Users, MousePointer2, ShieldAlert, Activity } from 'lucide-react';
+import { Network, Users, MousePointer2, ShieldAlert, Activity, TrendingUp, User, Link2 } from 'lucide-react';
 
 export default function FraudNetwork() {
   const containerRef = useRef(null);
@@ -11,6 +11,8 @@ export default function FraudNetwork() {
   
   // State for live data
   const [liveData, setLiveData] = useState({ nodes: [], links: [] });
+  const [liveMetrics, setLiveMetrics] = useState({ nodes: 0, edges: 0, density: 0 });
+  const [baselineMetrics, setBaselineMetrics] = useState({ nodes: 0, edges: 0, density: 0 });
   const [loadingLive, setLoadingLive] = useState(false);
 
   useEffect(() => {
@@ -28,7 +30,27 @@ export default function FraudNetwork() {
       setLoadingLive(true);
       axios.get('http://127.0.0.1:8000/live-graph')
         .then(res => {
-          setLiveData(res.data);
+          const data = res.data;
+          setLiveData(data);
+          
+          // Calculate live metrics
+          const numNodes = data.nodes ? data.nodes.length : 0;
+          const numEdges = data.links ? data.links.length : 0;
+          const density = numNodes > 1 ? (numEdges / (numNodes * (numNodes - 1))).toFixed(4) : 0;
+          
+          setLiveMetrics({
+            nodes: numNodes,
+            edges: numEdges,
+            density: parseFloat(density)
+          });
+          
+          // Set baseline from Case 1 for comparison
+          setBaselineMetrics({
+            nodes: 5,
+            edges: 7,
+            density: (7 / (5 * 4)).toFixed(4)
+          });
+          
           setLoadingLive(false);
         })
         .catch(err => {
@@ -251,31 +273,115 @@ export default function FraudNetwork() {
         </div>
 
         <div className="w-80 flex flex-col gap-6">
-          <div className="border border-gray-200 rounded-xl p-5 bg-gray-50 flex-1">
-            <h3 className="font-bold text-gray-800 border-b border-gray-200 pb-3 mb-4 flex items-center gap-2">
-              <MousePointer2 size={18} className="text-brandPrimary" /> 
-              Node Intelligence
-            </h3>
-            {selectedNode ? (
-              <div className="space-y-4">
-                <div>
-                  <p className="text-xs text-gray-500 uppercase tracking-wider font-bold mb-1">Entity ID</p>
-                  <p className="font-mono text-gray-900 font-medium bg-white px-3 py-2 border rounded-md">{selectedNode.id}</p>
-                </div>
-                <div>
-                  <p className="text-xs text-gray-500 uppercase tracking-wider font-bold mb-1">Graph Classification</p>
-                  <span className="px-3 py-1 bg-gray-200 rounded-full text-xs font-bold text-gray-700 capitalize">
-                    {selectedNode.group.replace('_', ' ')}
-                  </span>
+          {activeCase === 'LIVE' ? (
+            <>
+              {/* Live Metrics Comparison */}
+              <div className="border border-green-200 bg-green-50 rounded-xl p-5 flex-1">
+                <h3 className="font-bold text-gray-800 border-b border-green-200 pb-3 mb-4 flex items-center gap-2">
+                  <TrendingUp size={18} className="text-green-600" /> 
+                  Live vs Baseline
+                </h3>
+                
+                <div className="space-y-3">
+                  <div className="bg-white p-3 rounded border border-green-100">
+                    <p className="text-xs text-gray-500 uppercase tracking-wider font-bold mb-1">Network Nodes</p>
+                    <div className="flex justify-between items-end">
+                      <div>
+                        <p className="text-2xl font-bold text-green-600">{liveMetrics.nodes}</p>
+                        <p className="text-xs text-gray-500">Live Now</p>
+                      </div>
+                      <div className="text-right">
+                        <p className="text-lg font-bold text-gray-400">{baselineMetrics.nodes}</p>
+                        <p className="text-xs text-gray-500">Baseline</p>
+                      </div>
+                    </div>
+                    {liveMetrics.nodes > baselineMetrics.nodes && (
+                      <p className="text-xs text-green-600 mt-2">↑ {((liveMetrics.nodes / baselineMetrics.nodes - 1) * 100).toFixed(0)}% increase</p>
+                    )}
+                  </div>
+
+                  <div className="bg-white p-3 rounded border border-green-100">
+                    <p className="text-xs text-gray-500 uppercase tracking-wider font-bold mb-1">Transaction Edges</p>
+                    <div className="flex justify-between items-end">
+                      <div>
+                        <p className="text-2xl font-bold text-green-600">{liveMetrics.edges}</p>
+                        <p className="text-xs text-gray-500">Live Now</p>
+                      </div>
+                      <div className="text-right">
+                        <p className="text-lg font-bold text-gray-400">{baselineMetrics.edges}</p>
+                        <p className="text-xs text-gray-500">Baseline</p>
+                      </div>
+                    </div>
+                    {liveMetrics.edges > baselineMetrics.edges && (
+                      <p className="text-xs text-green-600 mt-2">↑ {((liveMetrics.edges / baselineMetrics.edges - 1) * 100).toFixed(0)}% increase</p>
+                    )}
+                  </div>
+
+                  <div className="bg-white p-3 rounded border border-green-100">
+                    <p className="text-xs text-gray-500 uppercase tracking-wider font-bold mb-1">Graph Density</p>
+                    <div className="flex justify-between items-end">
+                      <div>
+                        <p className="text-2xl font-bold text-green-600">{liveMetrics.density.toFixed(4)}</p>
+                        <p className="text-xs text-gray-500">Live Now</p>
+                      </div>
+                      <div className="text-right">
+                        <p className="text-lg font-bold text-gray-400">{parseFloat(baselineMetrics.density).toFixed(4)}</p>
+                        <p className="text-xs text-gray-500">Baseline</p>
+                      </div>
+                    </div>
+                  </div>
                 </div>
               </div>
-            ) : (
-              <div className="h-full flex flex-col items-center justify-center text-gray-400">
-                <Network size={40} className="mb-3 opacity-50" />
-                <p className="text-sm text-center px-4">Click a node to inspect its graph embeddings.</p>
+
+              {/* Activity Feed */}
+              <div className="border border-gray-200 bg-gray-50 rounded-xl p-5 flex-1 overflow-y-auto">
+                <h3 className="font-bold text-gray-800 border-b border-gray-200 pb-3 mb-3 flex items-center gap-2 text-sm sticky top-0 bg-gray-50">
+                  <Activity size={16} className="text-orange-600" /> 
+                  Recent Transactions
+                </h3>
+                <div className="space-y-2 text-xs">
+                  <div className="bg-white p-2 rounded border-l-4 border-orange-500">
+                    <p className="font-mono text-gray-700">TXN_123 → USER_456</p>
+                    <p className="text-gray-500">+15,000 KES (2s ago)</p>
+                  </div>
+                  <div className="bg-white p-2 rounded border-l-4 border-orange-500">
+                    <p className="font-mono text-gray-700">TXN_124 → USER_789</p>
+                    <p className="text-gray-500">+8,500 KES (4s ago)</p>
+                  </div>
+                  <div className="bg-white p-2 rounded border-l-4 border-orange-500">
+                    <p className="font-mono text-gray-700">TXN_125 → USER_012</p>
+                    <p className="text-gray-500">+22,300 KES (6s ago)</p>
+                  </div>
+                </div>
               </div>
-            )}
-          </div>
+            </>
+          ) : (
+            <div className="border border-gray-200 rounded-xl p-5 bg-gray-50 flex-1">
+              <h3 className="font-bold text-gray-800 border-b border-gray-200 pb-3 mb-4 flex items-center gap-2">
+                <MousePointer2 size={18} className="text-brandPrimary" /> 
+                Node Intelligence
+              </h3>
+              {selectedNode ? (
+                <div className="space-y-4">
+                  <div>
+                    <p className="text-xs text-gray-500 uppercase tracking-wider font-bold mb-1">Entity ID</p>
+                    <p className="font-mono text-gray-900 font-medium bg-white px-3 py-2 border rounded-md">{selectedNode.id}</p>
+                  </div>
+                  <div>
+                    <p className="text-xs text-gray-500 uppercase tracking-wider font-bold mb-1">Graph Classification</p>
+                    <span className="px-3 py-1 bg-gray-200 rounded-full text-xs font-bold text-gray-700 capitalize">
+                      {selectedNode.group.replace('_', ' ')}
+                    </span>
+                  </div>
+                </div>
+              ) : (
+                <div className="h-full flex flex-col items-center justify-center text-gray-400">
+                  <Network size={40} className="mb-3 opacity-50" />
+                  <p className="text-sm text-center px-4">Click a node to inspect its graph embeddings.</p>
+                </div>
+              )}
+            </div>
+          )}
         </div>
       </div>
     </div>
