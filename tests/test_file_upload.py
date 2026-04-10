@@ -129,8 +129,10 @@ class TestFileUploadEndpoint:
             # assert response.status_code == 400
             # assert "empty" in response.json()["detail"].lower()
             
-            df = pd.read_csv(temp_file)
-            assert len(df) == 0
+            # Empty CSV should raise EmptyDataError from pandas
+            with pytest.raises(pd.errors.EmptyDataError):
+                df = pd.read_csv(temp_file)
+            
             print("✓ Empty file detection test passed")
         finally:
             os.unlink(temp_file)

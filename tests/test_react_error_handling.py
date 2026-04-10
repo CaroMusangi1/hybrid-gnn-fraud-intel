@@ -69,8 +69,23 @@ class TestReactInputValidation:
         
         for value, should_be_valid in test_cases:
             try:
-                count = int(value)
-                is_valid = count >= 0
+                is_valid = False
+                # Check based on type
+                if isinstance(value, float):
+                    # Floats only valid if >= 0 AND equal to int (no decimal part)
+                    is_valid = value >= 0 and value == int(value)
+                elif isinstance(value, int):
+                    # Integers only valid if >= 0
+                    is_valid = value >= 0
+                elif isinstance(value, str):
+                    # Strings must not be empty
+                    if not value:
+                        is_valid = False
+                    else:
+                        # Try to parse as float
+                        num = float(value)
+                        # Must be >= 0 and whole number (no decimal part)
+                        is_valid = num >= 0 and num == int(num)
             except (ValueError, TypeError):
                 is_valid = False
             
