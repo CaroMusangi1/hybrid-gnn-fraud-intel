@@ -1,13 +1,14 @@
 import { useState, useEffect } from 'react';
-import { BarChart3, TrendingUp, AlertTriangle, CheckCircle2 } from 'lucide-react';
+import { BarChart3, TrendingUp, AlertTriangle, CheckCircle2, RefreshCw } from 'lucide-react';
 import axios from 'axios';
 
 export default function ModelComparison() {
   const [selectedModel, setSelectedModel] = useState('stacked_hybrid');
   const [metrics, setMetrics] = useState(null);
   const [loading, setLoading] = useState(false);
+  const [runningModel, setRunningModel] = useState(false);
 
-  // Fetch metrics for selected model
+  // Fetch metrics for selected model (from cache or live run)
   useEffect(() => {
     setLoading(true);
     axios.get(`http://127.0.0.1:8000/model-metrics?model=${selectedModel}`)
@@ -16,7 +17,22 @@ export default function ModelComparison() {
       .finally(() => setLoading(false));
   }, [selectedModel]);
 
-  if (loading) {
+  // Run the actual model script
+  const handleRunModel = async () => {
+    setRunningModel(true);
+    try {
+      const response = await axios.get(`http://127.0.0.1:8000/run-model-evaluation/${selectedModel}`);
+      if (response.data.metrics) {
+        setMetrics(response.data.metrics);
+      }
+    } catch (err) {
+      console.error('Error running model:', err);
+    } finally {
+      setRunningModel(false);
+    }
+  };
+
+  if (loading && !metrics) {
     return <div className="p-4 text-center text-gray-500">Loading metrics...</div>;
   }
 
@@ -38,9 +54,21 @@ export default function ModelComparison() {
                 : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
             }`}
           >
-            {model === 'xgboost' ? 'XGBoost' : model === 'gnn' ? 'GNN' : 'Stacked Hybrid'}
+            {model === 'xgboost' ? '🌳 XGBoost' : model === 'gnn' ? '🔗 GNN' : '⚡ Hybrid'}
           </button>
         ))}
+      </div>
+
+      {/* Run Real Model Button */}
+      <div className="mb-6">
+        <button
+          onClick={handleRunModel}
+          disabled={runningModel}
+          className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-lg transition-colors disabled:bg-blue-300"
+        >
+          <RefreshCw size={16} className={runningModel ? 'animate-spin' : ''} />
+          {runningModel ? 'Running Model Script...' : 'Run Real Model Evaluation'}
+        </button>
       </div>
 
       {/* Model Name & Description */}
@@ -81,7 +109,7 @@ export default function ModelComparison() {
             <h3 className="font-bold text-gray-900">Cases Caught ({metrics.cases_caught_count})</h3>
           </div>
           <div className="space-y-2">
-            {metrics.cases_caught.map((case_item) => (
+            {metrics.cases_caught?.map((case_item) => (
               <div
                 key={case_item.id}
                 className="bg-white p-2 rounded border border-green-200 text-sm"
@@ -100,7 +128,7 @@ export default function ModelComparison() {
             <h3 className="font-bold text-gray-900">Cases Missed ({metrics.cases_missed_count})</h3>
           </div>
           <div className="space-y-2">
-            {metrics.cases_missed.length > 0 ? (
+            {metrics.cases_missed?.length > 0 ? (
               metrics.cases_missed.map((case_item) => (
                 <div
                   key={case_item.id}
@@ -126,7 +154,7 @@ export default function ModelComparison() {
             Strengths
           </h4>
           <ul className="space-y-2">
-            {metrics.strengths.map((strength, idx) => (
+            {metrics.strengths?.map((strength, idx) => (
               <li key={idx} className="text-sm text-gray-700 flex gap-2">
                 <span className="text-blue-600 font-bold">•</span>
                 {strength}
@@ -142,7 +170,7 @@ export default function ModelComparison() {
             Shortcomings
           </h4>
           <ul className="space-y-2">
-            {metrics.shortcomings.map((shortcoming, idx) => (
+            {metrics.shortcomings?.map((shortcoming, idx) => (
               <li key={idx} className="text-sm text-gray-700 flex gap-2">
                 <span className="text-orange-600 font-bold">•</span>
                 {shortcoming}
