@@ -4,7 +4,7 @@ import torch
 import matplotlib.pyplot as plt
 from xgboost import XGBClassifier
 from sklearn.model_selection import train_test_split
-from sklearn.metrics import roc_curve, roc_auc_score
+from sklearn.metrics import roc_curve, roc_auc_score, precision_recall_curve, average_precision_score
 from torch_geometric.nn import SAGEConv, to_hetero
 
 from config import get_model_config
@@ -234,6 +234,51 @@ def save_individual_roc_plots(curves, output_dir):
         print(f"Saved individual ROC plot to: {per_model_path}")
 
 
+def save_pr_plot(curves, output_path):
+    plt.figure(figsize=(9, 7))
+
+    for label, y_true, y_score in curves:
+        precision, recall, _ = precision_recall_curve(y_true, y_score)
+        ap_value = average_precision_score(y_true, y_score)
+        plt.plot(recall, precision, linewidth=2, label=f"{label} (AP={ap_value:.4f})")
+
+    positive_rate = np.mean(curves[0][1]) if curves else 0.0
+    plt.plot([0, 1], [positive_rate, positive_rate], linestyle="--", linewidth=1, color="gray", label="Random")
+    plt.xlabel("Recall")
+    plt.ylabel("Precision")
+    plt.title("PR Curve Comparison: Baseline vs GNN vs Stacked Hybrid")
+    plt.legend(loc="lower left")
+    plt.grid(alpha=0.25)
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300)
+    plt.close()
+    print(f"Saved PR comparison plot to: {output_path}")
+
+
+def save_individual_pr_plots(curves, output_dir):
+    for label, y_true, y_score in curves:
+        precision, recall, _ = precision_recall_curve(y_true, y_score)
+        ap_value = average_precision_score(y_true, y_score)
+
+        plt.figure(figsize=(8, 6))
+        plt.plot(recall, precision, linewidth=2, label=f"{label} (AP={ap_value:.4f})")
+
+        positive_rate = np.mean(y_true)
+        plt.plot([0, 1], [positive_rate, positive_rate], linestyle="--", linewidth=1, color="gray", label="Random")
+        plt.xlabel("Recall")
+        plt.ylabel("Precision")
+        plt.title(f"PR Curve: {label}")
+        plt.legend(loc="lower left")
+        plt.grid(alpha=0.25)
+        plt.tight_layout()
+
+        safe_name = label.lower().replace(" ", "_")
+        per_model_path = f"{output_dir}/pr_{safe_name}.png"
+        plt.savefig(per_model_path, dpi=300)
+        plt.close()
+        print(f"Saved individual PR plot to: {per_model_path}")
+
+
 def main():
     print("Loading tabular and embedding data...")
     df = pd.read_csv("data/processed/final_model_data.csv")
@@ -256,6 +301,14 @@ def main():
     print(f"GNN AUC:              {auc_gnn:.4f}")
     print(f"Stacked Hybrid AUC:   {auc_stack:.4f}")
 
+    ap_base = average_precision_score(y_base, p_base)
+    ap_gnn = average_precision_score(y_gnn, p_gnn)
+    ap_stack = average_precision_score(y_stack, p_stack)
+    print("\nPR-AUC (Average Precision) Summary")
+    print(f"Baseline XGBoost AP:  {ap_base:.4f}")
+    print(f"GNN AP:               {ap_gnn:.4f}")
+    print(f"Stacked Hybrid AP:    {ap_stack:.4f}")
+
     output_dir = "data/processed"
     output_path = f"{output_dir}/roc_auc_comparison.png"
     curves = [
@@ -266,10 +319,15 @@ def main():
     save_roc_plot(curves, output_path)
     save_individual_roc_plots(curves, output_dir)
 
+    pr_output_path = f"{output_dir}/pr_auc_comparison.png"
+    save_pr_plot(curves, pr_output_path)
+    save_individual_pr_plots(curves, output_dir)
+
     summary_df = pd.DataFrame(
         {
             "model": ["baseline_xgboost", "evaluate_gnn", "stacked_hybrid"],
             "roc_auc": [auc_base, auc_gnn, auc_stack],
+            "pr_auc": [ap_base, ap_gnn, ap_stack],
         }
     )
     summary_path = f"{output_dir}/roc_auc_summary.csv"
