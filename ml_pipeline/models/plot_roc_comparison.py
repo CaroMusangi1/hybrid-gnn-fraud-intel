@@ -67,13 +67,27 @@ def evaluate_baseline(df, train_idx, test_idx):
 
 
 def evaluate_stacked_hybrid(df, embeddings_df, train_idx, test_idx):
-    embeddings_df = embeddings_df.add_prefix("gnn_")
+    sender_embeddings = embeddings_df.add_prefix("gnn_sender_")
+    receiver_embeddings = embeddings_df.add_prefix("gnn_receiver_")
+
     hybrid_df = df.merge(
-        embeddings_df,
+        sender_embeddings,
         left_on="sender_id",
-        right_on="gnn_user_id",
+        right_on="gnn_sender_user_id",
         how="left",
     )
+
+    hybrid_df = hybrid_df.merge(
+        receiver_embeddings,
+        left_on="receiver_id",
+        right_on="gnn_receiver_user_id",
+        how="left",
+    )
+
+    embedding_cols = [
+        c for c in hybrid_df.columns if c.startswith("gnn_sender_") or c.startswith("gnn_receiver_")
+    ]
+    hybrid_df[embedding_cols] = hybrid_df[embedding_cols].fillna(0)
 
     drop_cols = [
         "sender_id",
@@ -83,7 +97,8 @@ def evaluate_stacked_hybrid(df, embeddings_df, train_idx, test_idx):
         "agent_id",
         "is_fraud",
         "fraud_scenario",
-        "gnn_user_id",
+        "gnn_sender_user_id",
+        "gnn_receiver_user_id",
     ]
     X = hybrid_df.drop(columns=drop_cols, errors="ignore")
     y = hybrid_df["is_fraud"].astype(int)
@@ -93,13 +108,19 @@ def evaluate_stacked_hybrid(df, embeddings_df, train_idx, test_idx):
 
     pos_weight = (len(y_train) - y_train.sum()) / max(y_train.sum(), 1)
     model = XGBClassifier(
-        n_estimators=150,
-        max_depth=4,
-        learning_rate=0.05,
-        colsample_bytree=0.6,
-        scale_pos_weight=pos_weight * 1.5,
+        n_estimators=500,
+        max_depth=6,
+        learning_rate=0.02,
+        colsample_bytree=0.75,
+        subsample=0.85,
+        min_child_weight=3,
+        gamma=0.3,
+        reg_alpha=0.1,
+        reg_lambda=6.0,
+        tree_method="hist",
+        scale_pos_weight=pos_weight * 1.2,
         random_state=42,
-        eval_metric="logloss",
+        eval_metric="auc",
     )
     model.fit(X_train, y_train)
 

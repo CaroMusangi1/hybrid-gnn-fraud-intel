@@ -20,23 +20,56 @@ embeddings_df = pd.read_csv('data/processed/user_embeddings.csv')
 embedding_dim = len(embeddings_df.columns) - 1  # Subtract 1 for the 'user_id' column
 print(f"Auto-detected embedding dimensions: {embedding_dim}")
 
-# Add prefix to avoid column name collisions
-embeddings_df = embeddings_df.add_prefix('gnn_')
+# Create sender and receiver embedding feature blocks to inject richer topology context
+sender_embeddings = embeddings_df.add_prefix('gnn_sender_')
+receiver_embeddings = embeddings_df.add_prefix('gnn_receiver_')
 
-# Merge the sender's GNN structural intelligence onto each transaction
-# The 'user_id' column is now 'gnn_user_id' due to the prefix
 hybrid_df = df.merge(
-    embeddings_df,
+    sender_embeddings,
     left_on='sender_id',
-    right_on='gnn_user_id',
+    right_on='gnn_sender_user_id',
     how='left'
 )
+
+hybrid_df = hybrid_df.merge(
+    receiver_embeddings,
+    left_on='receiver_id',
+    right_on='gnn_receiver_user_id',
+    how='left'
+)
+
+# Non-user receivers may not have embeddings; default missing embedding values to zero.
+embedding_cols = [c for c in hybrid_df.columns if c.startswith('gnn_sender_') or c.startswith('gnn_receiver_')]
+hybrid_df[embedding_cols] = hybrid_df[embedding_cols].fillna(0)
+
+# TOPOLOGY INTERACTION FEATURES
+# These capture the *relationship* between sender and receiver in graph space,
+# which is the exact signal that exposes fraud rings and mule chains.
+print("Computing sender-receiver topology interaction features...")
+sender_cols = [c for c in hybrid_df.columns if c.startswith('gnn_sender_') and c != 'gnn_sender_user_id']
+receiver_cols = [c for c in hybrid_df.columns if c.startswith('gnn_receiver_') and c != 'gnn_receiver_user_id']
+
+sender_mat = hybrid_df[sender_cols].values
+receiver_mat = hybrid_df[receiver_cols].values
+
+# Compute all interaction features at once and concat to avoid fragmentation warnings
+sender_norms = np.linalg.norm(sender_mat, axis=1, keepdims=True)
+receiver_norms = np.linalg.norm(receiver_mat, axis=1, keepdims=True)
+cosine_denom = np.maximum(sender_norms * receiver_norms, 1e-8)
+topo_features = pd.DataFrame({
+    'topo_dot_product': np.sum(sender_mat * receiver_mat, axis=1),
+    'topo_l2_distance': np.linalg.norm(sender_mat - receiver_mat, axis=1),
+    'topo_l1_distance': np.sum(np.abs(sender_mat - receiver_mat), axis=1),
+    'topo_cosine_sim':  np.sum(sender_mat * receiver_mat, axis=1) / cosine_denom.squeeze(),
+}, index=hybrid_df.index)
+hybrid_df = pd.concat([hybrid_df, topo_features], axis=1)
+print(f"Added 4 topology interaction features (dot, l2, l1, cosine)")
 
 print(f"Stacked feature set dimensions: {embedding_dim} embedding features")
 
 # 3. Prepare for Machine Learning
 drop_cols = ['sender_id', 'receiver_id', 'timestamp', 'device_id', 'agent_id', 
-             'is_fraud', 'fraud_scenario', 'gnn_user_id']
+             'is_fraud', 'fraud_scenario', 'gnn_sender_user_id', 'gnn_receiver_user_id']
 X = hybrid_df.drop(columns=drop_cols, errors='ignore')
 y = hybrid_df['is_fraud']
 scenarios = hybrid_df['fraud_scenario']
@@ -54,15 +87,41 @@ print(f"Training TUNED STACKED XGBoost on {len(X_train)} transactions...")
 pos_weight = (len(y_train) - sum(y_train)) / sum(y_train)
 
 stacked_model = XGBClassifier(
-    n_estimators=150,           
-    max_depth=4,                
-    learning_rate=0.05,         
-    colsample_bytree=0.6,       
-    scale_pos_weight=pos_weight * 1.5, 
+    n_estimators=500,
+    max_depth=6,
+    learning_rate=0.02,
+    colsample_bytree=0.75,
+    subsample=0.85,
+    min_child_weight=3,
+    gamma=0.3,
+    reg_alpha=0.1,
+    reg_lambda=6.0,
+    tree_method='hist',
+    scale_pos_weight=pos_weight * 1.2,
     random_state=42,
-    eval_metric='logloss'
+    eval_metric='auc'
 )
-stacked_model.fit(X_train, y_train)
+
+# SCENARIO-AWARE SAMPLE WEIGHTS
+# We tell the model to pay extra attention to topologically hard fraud patterns.
+# These are the exact scenarios that define our thesis contribution.
+scenario_weight_map = {
+    'fraud_ring':     4.0,  # Highest priority: GNN structural blind-spot pattern
+    'mule_sim_swap':  3.0,  # High priority: network-chained identity fraud
+    'fast_cashout':   1.5,  # Moderate: partially visible without graph
+    'business_fraud': 1.5,  # Moderate: already detects well
+    'loan_fraud':     1.5,  # Moderate: already detects well
+    'Normal':         1.0,  # Baseline safe transactions
+}
+sample_weights = np.array([
+    scenario_weight_map.get(s, 1.0) for s in scen_train
+])
+print("Scenario-aware sample weights applied:")
+for scenario, weight in scenario_weight_map.items():
+    count = (scen_train == scenario).sum()
+    print(f"  {scenario:<20} x{weight} ({count} training samples)")
+
+stacked_model.fit(X_train, y_train, sample_weight=sample_weights)
 
 # Save the trained model for the API to use
 os.makedirs('models/saved', exist_ok=True)
