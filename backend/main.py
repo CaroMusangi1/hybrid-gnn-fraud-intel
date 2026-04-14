@@ -439,6 +439,15 @@ def parse_script_metrics(script_output: str, model_type: str) -> dict[str, Any] 
     }
 
 
+def load_latest_saved_metrics(model_type: str) -> dict[str, Any] | None:
+    metrics_path = os.path.join(BASE_DIR, 'models', 'saved', f'latest_{model_type}_metrics.json')
+    if not os.path.exists(metrics_path):
+        return None
+
+    with open(metrics_path, 'r', encoding='utf-8') as f:
+        return json.load(f)
+
+
 def compute_live_metrics_for_model(model_type: str) -> dict[str, Any]:
     df, dataset_meta = load_active_dataset()
     y_true = df["is_fraud"].astype(int)
@@ -1322,7 +1331,7 @@ def generate_model_explanation(model_type: str, metrics: dict, topology_results:
 
 
 @app.get("/ai-explain-model/{model_type}")
-async def ai_explain_model(model_type: str):
+async def ai_explain_model(model_type: str, refresh: bool = False):
     """
     AI-generated explanation from REAL model metrics (not hardcoded).
     Executes the model and extracts actual performance data.
@@ -1331,8 +1340,14 @@ async def ai_explain_model(model_type: str):
         if model_type not in {"xgboost", "gnn", "stacked_hybrid"}:
             raise HTTPException(status_code=404, detail=f"Model {model_type} not found")
 
-        live_run = await run_model_evaluation(model_type)
-        live_metrics = live_run.get("metrics", {})
+        script_status = "cached"
+        live_metrics = None if refresh else load_latest_saved_metrics(model_type)
+
+        if live_metrics is None:
+            live_run = await run_model_evaluation(model_type)
+            live_metrics = live_run.get("metrics", {})
+            script_status = live_run.get("script_status") or "completed"
+
         metrics = live_metrics.get("overall_metrics", {})
         topology_results = {
             item["id"]: {
@@ -1345,7 +1360,7 @@ async def ai_explain_model(model_type: str):
 
         explanation = generate_model_explanation(model_type, metrics, topology_results)
         explanation["dataset"] = live_metrics.get("dataset", {})
-        explanation["script_status"] = live_run.get("script_status")
+        explanation["script_status"] = script_status
         return explanation
     except Exception as e:
         # Fallback: return explanation with note about execution failure
