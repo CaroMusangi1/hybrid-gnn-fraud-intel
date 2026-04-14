@@ -143,8 +143,13 @@ export default function Transactions() {
         return;
       }
       
-      setUploadedFile(file.name);
-      setExtractedTransactions(response.data.transactions);
+      setUploadedFile(response.data?.dataset?.source_name || file.name);
+      setExtractedTransactions(response.data.transactions || []);
+      setSelectedUploadedTx((response.data.transactions || [])[0] || null);
+      if (response.data?.dataset) {
+        localStorage.setItem('activeDatasetMeta', JSON.stringify(response.data.dataset));
+        window.dispatchEvent(new Event('dataset-updated'));
+      }
       setApiHealthy(true);
     } catch (err) {
       const { message, details } = parseErrorMessage(err);
