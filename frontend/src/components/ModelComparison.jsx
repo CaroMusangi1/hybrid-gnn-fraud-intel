@@ -3,14 +3,38 @@ import { BarChart3, TrendingUp, AlertTriangle, CheckCircle2, RefreshCw } from 'l
 import axios from 'axios';
 
 const API_BASE = 'http://127.0.0.1:8000';
+const MODEL_CACHE_KEY = 'modelComparison:cache';
+const CLEARED_MODELS_KEY = 'modelComparison:cleared';
+const SELECTED_MODEL_KEY = 'modelComparison:selectedModel';
+
+const readJson = (key, fallback) => {
+  try {
+    const raw = localStorage.getItem(key);
+    return raw ? JSON.parse(raw) : fallback;
+  } catch {
+    return fallback;
+  }
+};
 
 export default function ModelComparison() {
-  const [selectedModel, setSelectedModel] = useState('stacked_hybrid');
-  const [metrics, setMetrics] = useState(null);
+  const [selectedModel, setSelectedModel] = useState(() => localStorage.getItem(SELECTED_MODEL_KEY) || 'stacked_hybrid');
+  const [cache, setCache] = useState(() => readJson(MODEL_CACHE_KEY, {}));
+  const [clearedModels, setClearedModels] = useState(() => readJson(CLEARED_MODELS_KEY, {}));
+  const [metrics, setMetrics] = useState(() => readJson(MODEL_CACHE_KEY, {})[localStorage.getItem(SELECTED_MODEL_KEY) || 'stacked_hybrid']?.metrics || null);
   const [loading, setLoading] = useState(false);
   const [runningModel, setRunningModel] = useState(false);
-  const [datasetInfo, setDatasetInfo] = useState(null);
+  const [datasetInfo, setDatasetInfo] = useState(() => readJson(MODEL_CACHE_KEY, {})[localStorage.getItem(SELECTED_MODEL_KEY) || 'stacked_hybrid']?.datasetInfo || null);
   const [error, setError] = useState(null);
+
+  const persistCache = (nextCache) => {
+    setCache(nextCache);
+    localStorage.setItem(MODEL_CACHE_KEY, JSON.stringify(nextCache));
+  };
+
+  const persistClearedModels = (nextClearedModels) => {
+    setClearedModels(nextClearedModels);
+    localStorage.setItem(CLEARED_MODELS_KEY, JSON.stringify(nextClearedModels));
+  };
 
   const fetchModelMetrics = async (modelKey) => {
     setLoading(true);
@@ -22,6 +46,15 @@ export default function ModelComparison() {
       ]);
       setMetrics(metricsRes.data);
       setDatasetInfo(metricsRes.data?.dataset || datasetRes.data?.dataset || null);
+      const nextCache = {
+        ...cache,
+        [modelKey]: {
+          metrics: metricsRes.data,
+          datasetInfo: metricsRes.data?.dataset || datasetRes.data?.dataset || null,
+          source: 'backend-fetch',
+        },
+      };
+      persistCache(nextCache);
     } catch (err) {
       console.error('Error fetching metrics:', err);
       setError('Could not fetch model metrics from the backend.');
@@ -31,22 +64,54 @@ export default function ModelComparison() {
   };
 
   useEffect(() => {
+    localStorage.setItem(SELECTED_MODEL_KEY, selectedModel);
+    const cachedEntry = cache[selectedModel];
+    if (cachedEntry) {
+      setMetrics(cachedEntry.metrics);
+      setDatasetInfo(cachedEntry.datasetInfo || cachedEntry.metrics?.dataset || null);
+      return;
+    }
+    if (clearedModels[selectedModel]) {
+      setMetrics(null);
+      setDatasetInfo(null);
+      return;
+    }
     fetchModelMetrics(selectedModel);
   }, [selectedModel]);
 
   useEffect(() => {
-    const refresh = () => fetchModelMetrics(selectedModel);
+    const refresh = () => {
+      const nextCleared = { ...clearedModels };
+      delete nextCleared[selectedModel];
+      persistClearedModels(nextCleared);
+      fetchModelMetrics(selectedModel);
+    };
     window.addEventListener('dataset-updated', refresh);
     return () => window.removeEventListener('dataset-updated', refresh);
-  }, [selectedModel]);
+  }, [selectedModel, cache, clearedModels]);
 
   const handleRunModel = async () => {
     setRunningModel(true);
     setError(null);
     try {
       const response = await axios.get(`${API_BASE}/run-model-evaluation/${selectedModel}`);
-      setMetrics(response.data.metrics || response.data);
-      setDatasetInfo(response.data.dataset || response.data.metrics?.dataset || null);
+      const nextMetrics = response.data.metrics || response.data;
+      const nextDataset = response.data.dataset || response.data.metrics?.dataset || null;
+      setMetrics(nextMetrics);
+      setDatasetInfo(nextDataset);
+      const nextCache = {
+        ...cache,
+        [selectedModel]: {
+          metrics: nextMetrics,
+          datasetInfo: nextDataset,
+          source: 'run-model-evaluation',
+          scriptStatus: response.data.script_status,
+        },
+      };
+      persistCache(nextCache);
+      const nextCleared = { ...clearedModels };
+      delete nextCleared[selectedModel];
+      persistClearedModels(nextCleared);
     } catch (err) {
       console.error('Error running model:', err);
       setError('Model evaluation failed. Check that the backend and model scripts are available.');
@@ -55,12 +120,37 @@ export default function ModelComparison() {
     }
   };
 
+  const handleClearResults = () => {
+    const nextCache = { ...cache };
+    delete nextCache[selectedModel];
+    persistCache(nextCache);
+    const nextCleared = { ...clearedModels, [selectedModel]: true };
+    persistClearedModels(nextCleared);
+    setMetrics(null);
+    setDatasetInfo(null);
+    setError(null);
+  };
+
   if (loading && !metrics) {
     return <div className="p-4 text-center text-gray-500">Loading metrics...</div>;
   }
 
   if (!metrics) {
-    return <div className="p-4 text-center text-gray-500">No metrics available</div>;
+    return (
+      <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
+        <div className="p-4 text-center text-gray-500">No saved visuals for this model. Click "Run Real Model Evaluation" to populate them.</div>
+        <div className="mt-4 flex gap-3 justify-center">
+          <button
+            onClick={handleRunModel}
+            disabled={runningModel}
+            className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-lg transition-colors disabled:bg-blue-300"
+          >
+            <RefreshCw size={16} className={runningModel ? 'animate-spin' : ''} />
+            {runningModel ? 'Running Model Script...' : 'Run Real Model Evaluation'}
+          </button>
+        </div>
+      </div>
+    );
   }
 
   const overall = metrics.overall_metrics || metrics;
@@ -100,14 +190,22 @@ export default function ModelComparison() {
 
       {/* Run Real Model Button */}
       <div className="mb-6">
-        <button
-          onClick={handleRunModel}
-          disabled={runningModel}
-          className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-lg transition-colors disabled:bg-blue-300"
-        >
-          <RefreshCw size={16} className={runningModel ? 'animate-spin' : ''} />
-          {runningModel ? 'Running Model Script...' : 'Run Real Model Evaluation'}
-        </button>
+        <div className="flex gap-3">
+          <button
+            onClick={handleRunModel}
+            disabled={runningModel}
+            className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-lg transition-colors disabled:bg-blue-300"
+          >
+            <RefreshCw size={16} className={runningModel ? 'animate-spin' : ''} />
+            {runningModel ? 'Running Model Script...' : 'Run Real Model Evaluation'}
+          </button>
+          <button
+            onClick={handleClearResults}
+            className="px-4 py-2 bg-gray-100 hover:bg-gray-200 text-gray-800 font-medium rounded-lg transition-colors"
+          >
+            Clear Visuals
+          </button>
+        </div>
       </div>
 
       {/* Model Name & Description */}
