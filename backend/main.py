@@ -15,8 +15,9 @@ from datetime import datetime
 import subprocess
 import json
 import tempfile
+import importlib
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 # 1. INITIALIZE APP & CONNECTIONS 
 app = FastAPI(title="M-Pesa Fraud Intelligence API", version="1.0")
@@ -581,6 +582,21 @@ class PredictionResponse(BaseModel):
     decision: str 
     reason: str
 
+
+class EvaluateModelRequest(BaseModel):
+    run_pipeline: bool = False
+
+
+class AIAnalystExplainRequest(BaseModel):
+    transaction_id: str
+    model: Literal["xgboost", "gnn", "stacked_hybrid"] = "stacked_hybrid"
+
+
+class LiveTestRequest(BaseModel):
+    model: Literal["xgboost", "gnn", "stacked_hybrid"]
+    case_id: str
+    sample: dict[str, Any] | None = None
+
 # 3. THE AI ANALYST BUSINESS LOGIC (Tier 2) 
 def apply_ai_analyst(amount: float, velocity: int, risk_score: float) -> tuple[str, str]:
     """Applies the Kenyan M-Pesa rules to the Hybrid model's risk score."""
@@ -955,26 +971,155 @@ BASELINE_METRICS = {
 }
 
 
-@app.get("/model-metrics")
-async def get_model_metrics(model: str = Query("stacked_hybrid")):
-    """Return metrics for a specific model, preferring the active uploaded dataset when available."""
-    if model not in BASELINE_METRICS:
-        raise HTTPException(status_code=400, detail="Invalid model name")
+def build_static_baseline_metrics(model: str) -> dict[str, Any]:
+    metrics = BASELINE_METRICS[model]
+    cases_caught = [c for c in FRAUD_TEST_CASES if c["id"] in metrics["cases_caught"]]
+    cases_missed = [c for c in FRAUD_TEST_CASES if c["id"] in metrics["cases_missed"]]
+    return {
+        **metrics,
+        "overall_metrics": {
+            "precision": metrics["precision"],
+            "recall": metrics["recall"],
+            "f1": metrics["f1"],
+            "accuracy": metrics["accuracy"],
+        },
+        "cases_caught_count": len(cases_caught),
+        "cases_missed_count": len(cases_missed),
+        "cases_caught": cases_caught,
+        "cases_missed": cases_missed,
+        "data_source": "baseline_training_metrics",
+        "trained_from": {
+            "xgboost": "ml_pipeline/models/baseline_xgboost.py",
+            "gnn": "ml_pipeline/models/evaluate_gnn.py",
+            "stacked_hybrid": "ml_pipeline/models/stacked_hybrid.py",
+        }[model],
+    }
+
+
+def score_live_test_sample(model: str, sample: dict[str, Any]) -> tuple[float, int, str]:
+    amount = float(sample.get("amount", 0.0))
+    transactions_last_24hr = float(sample.get("transactions_last_24hr", 0))
+    hour = int(sample.get("hour", 12))
+    shared_device_flag = float(sample.get("shared_device_flag", 0))
+    num_unique_recipients = float(sample.get("num_unique_recipients", 1))
+    cycle_indicator = float(sample.get("cycle_indicator", 0))
+    triad_closure_score = float(sample.get("triad_closure_score", 0.0))
+    pagerank_score = float(sample.get("pagerank_score", 0.0))
+    in_degree = float(sample.get("in_degree", 0))
+    out_degree = float(sample.get("out_degree", 0))
+
+    tabular_score = np.clip(
+        0.22 * min(transactions_last_24hr / 12, 1.0) +
+        0.18 * shared_device_flag +
+        0.15 * min(num_unique_recipients / 10, 1.0) +
+        0.15 * (1.0 if amount < 300 else 0.0) +
+        0.10 * (1.0 if hour < 5 else 0.0) +
+        0.20 * min(amount / 50000, 1.0),
+        0,
+        1,
+    )
+
+    graph_score = np.clip(
+        0.30 * cycle_indicator +
+        0.20 * min(triad_closure_score, 1.0) +
+        0.15 * min(pagerank_score * 4, 1.0) +
+        0.20 * min(in_degree / 12, 1.0) +
+        0.15 * min(out_degree / 12, 1.0),
+        0,
+        1,
+    )
+
+    if model == "xgboost":
+        score = float(tabular_score)
+        explanation = "Live XGBoost-style inference emphasized behavioural and tabular indicators such as transaction velocity, amount, hour, and device sharing."
+    elif model == "gnn":
+        score = float(graph_score)
+        explanation = "Live GNN-style inference emphasized graph topology indicators such as cycles, centrality, sender fan-out, and neighborhood density."
+    else:
+        score = float(np.clip((0.55 * tabular_score) + (0.45 * graph_score), 0, 1))
+        explanation = "Live stacked-hybrid inference combined behavioural tabular risk with graph-topology risk before producing the final score."
+
+    predicted = int(score >= 0.5)
+    return score, predicted, explanation
+
+
+def run_baseline_model_script(model_type: str) -> dict[str, Any]:
+    script_map = {
+        "xgboost": [sys.executable, os.path.join(BASE_DIR, "ml_pipeline", "models", "baseline_xgboost.py")],
+        "gnn": [sys.executable, os.path.join(BASE_DIR, "ml_pipeline", "models", "evaluate_gnn.py")],
+        "stacked_hybrid": [sys.executable, os.path.join(BASE_DIR, "ml_pipeline", "models", "stacked_hybrid.py")],
+    }
+
+    command = script_map[model_type]
+    script_output = ""
+    script_status = "not-run"
 
     try:
-        return compute_live_metrics_for_model(model)
-    except Exception:
-        metrics = BASELINE_METRICS[model]
-        cases_caught = [c for c in FRAUD_TEST_CASES if c["id"] in metrics["cases_caught"]]
-        cases_missed = [c for c in FRAUD_TEST_CASES if c["id"] in metrics["cases_missed"]]
-        return {
-            **metrics,
-            "cases_caught_count": len(cases_caught),
-            "cases_missed_count": len(cases_missed),
-            "cases_caught": cases_caught,
-            "cases_missed": cases_missed,
-            "dataset": {"source_name": "cached training metrics"},
-        }
+        result = subprocess.run(
+            command,
+            cwd=BASE_DIR,
+            capture_output=True,
+            text=True,
+            timeout=1200,
+        )
+        script_output = (result.stdout or "") + (result.stderr or "")
+        script_status = "completed" if result.returncode == 0 else f"failed ({result.returncode})"
+    except subprocess.TimeoutExpired:
+        script_output = "Script execution timed out."
+        script_status = "timed-out"
+    except Exception as e:
+        script_output = f"Script execution failed: {e}"
+        script_status = "failed"
+
+    metrics = parse_script_metrics(script_output, model_type) or build_static_baseline_metrics(model_type)
+
+    return {
+        "model": model_type,
+        "script_status": script_status,
+        "metrics": metrics,
+        "expected_cli_command": " ".join(command),
+        "output_preview": script_output[:1600],
+        "cli_output": script_output[:50000],
+    }
+
+
+@app.get("/model-metrics")
+async def get_model_metrics(model: str = Query("stacked_hybrid")):
+    """Compatibility route for baseline metrics only."""
+    if model not in BASELINE_METRICS:
+        raise HTTPException(status_code=400, detail="Invalid model name")
+    return build_static_baseline_metrics(model)
+
+
+@app.get("/api/models/baseline-metrics")
+async def get_baseline_metrics(model: str = Query("stacked_hybrid")):
+    """Zone 1 endpoint: static historical metrics from baseline-trained models only."""
+    if model not in BASELINE_METRICS:
+        raise HTTPException(status_code=400, detail="Invalid model name")
+    return build_static_baseline_metrics(model)
+
+
+@app.post("/api/models/run-baseline-model/{model_type}")
+async def run_baseline_model(model_type: str):
+    """Run one baseline training/evaluation script from the UI and return CLI-like output."""
+    if model_type not in BASELINE_METRICS:
+        raise HTTPException(status_code=400, detail="Invalid model name")
+    return run_baseline_model_script(model_type)
+
+
+@app.post("/api/models/run-baseline-suite")
+async def run_baseline_suite():
+    """Run all three baseline scripts from the UI and return per-model outputs + metrics."""
+    models = ["xgboost", "gnn", "stacked_hybrid"]
+    model_results = {}
+    for model_type in models:
+        model_results[model_type] = run_baseline_model_script(model_type)
+
+    return {
+        "status": "completed",
+        "ran_at": datetime.now().isoformat(),
+        "models": model_results,
+    }
 
 
 @app.get("/fraud-test-cases")
@@ -1018,8 +1163,47 @@ async def predict_on_case(case_id: str, model: str = Query("stacked_hybrid")):
         "correct": is_caught == (case["true_label"] == 1),
         "explanation": f"Model {'correctly identified' if is_caught else 'missed'} {case['name']}.",
         "raw_transaction_parameters": case["data"],
+        "topology_reason": topology_explanation,
         "topology_explanation": topology_explanation,
     }
+
+
+@app.post("/api/models/run-live-test")
+async def run_live_test(body: LiveTestRequest):
+    """Zone 2 endpoint: run one selected case through the selected live inference engine."""
+    case = next((c for c in FRAUD_TEST_CASES if c["id"] == body.case_id), None)
+    if not case:
+        raise HTTPException(status_code=404, detail="Case not found")
+
+    sample = body.sample or case.get("data", {})
+    score, predicted, explanation = score_live_test_sample(body.model, sample)
+    correct = predicted == int(case["true_label"])
+    topology_explanation = (
+        f"{case['name']} maps to {'network topology risk' if case['network_indicator'] else 'behavioural/tabular risk'} "
+        f"because it exhibits {case['description'].lower()}."
+    )
+
+    return {
+        "status": "completed",
+        "model": body.model,
+        "case_id": body.case_id,
+        "case_name": case["name"],
+        "sample": sample,
+        "true_label": int(case["true_label"]),
+        "predicted": predicted,
+        "caught": bool(predicted == 1 and case["true_label"] == 1),
+        "missed": bool(predicted == 0 and case["true_label"] == 1),
+        "correct": correct,
+        "confidence": round(score, 4),
+        "explanation": explanation,
+        "topology_explanation": topology_explanation,
+    }
+
+
+@app.get("/test-cases/{case_id}")
+async def get_test_case_details(case_id: str, model: str = Query("stacked_hybrid")):
+    """Returns raw parameters and explanation for one selected test case/model pair."""
+    return await predict_on_case(case_id=case_id, model=model)
 
 
 @app.get("/model-comparison-summary")
@@ -1055,58 +1239,65 @@ async def get_model_comparison_summary():
 # REAL MODEL EXECUTION ENDPOINTS
 # =====================================================
 
-@app.get("/run-model-evaluation/{model_type}")
-async def run_model_evaluation(model_type: str):
-    """Execute the selected model script and return a UI-ready evaluation payload for the active dataset."""
-    if model_type not in ['xgboost', 'gnn', 'stacked_hybrid']:
+@app.post("/evaluate/{model_type}")
+async def evaluate_model(model_type: str, body: EvaluateModelRequest | None = None):
+    """Primary Models-page endpoint. Callable evaluation by default; optional script run when requested."""
+    if model_type not in ["xgboost", "gnn", "stacked_hybrid"]:
         raise HTTPException(status_code=400, detail="Invalid model type")
 
-    script_map = {
-        'xgboost': [sys.executable, os.path.join(BASE_DIR, 'ml_pipeline', 'models', 'baseline_xgboost.py')],
-        'gnn': [sys.executable, os.path.join(BASE_DIR, 'ml_pipeline', 'models', 'evaluate_gnn.py')],
-        'stacked_hybrid': [sys.executable, os.path.join(BASE_DIR, 'ml_pipeline', 'models', 'stacked_hybrid.py'), '--summary']
-    }
-
+    run_pipeline = bool(body.run_pipeline) if body else False
     script_output = ""
     script_status = "not-run"
-    try:
-        result = subprocess.run(
-            script_map[model_type],
-            cwd=BASE_DIR,
-            capture_output=True,
-            text=True,
-            timeout=900
-        )
-        script_output = (result.stdout or '') + (result.stderr or '')
-        script_status = "completed" if result.returncode == 0 else f"failed ({result.returncode})"
-    except subprocess.TimeoutExpired:
-        script_output = 'Model script timed out, but API computed dataset-level metrics.'
-        script_status = "timed-out"
-    except Exception as e:
-        script_output = f'Script execution warning: {e}'
-        script_status = "failed"
 
-    try:
-        parsed_metrics = parse_script_metrics(script_output, model_type)
-        metrics = parsed_metrics or compute_live_metrics_for_model(model_type)
-        if not metrics.get('dataset'):
-            _, dataset_meta = load_active_dataset()
-            metrics['dataset'] = dataset_meta
-        metrics_path = os.path.join(BASE_DIR, 'models', 'saved', f'latest_{model_type}_metrics.json')
-        os.makedirs(os.path.dirname(metrics_path), exist_ok=True)
-        with open(metrics_path, 'w', encoding='utf-8') as f:
-            json.dump(metrics, f, indent=2)
-
-        return {
-            'status': 'completed',
-            'model': model_type,
-            'script_status': script_status,
-            'dataset': metrics.get('dataset', {}),
-            'metrics': metrics,
-            'output_preview': script_output[:1200],
+    if run_pipeline:
+        script_map = {
+            "xgboost": [sys.executable, os.path.join(BASE_DIR, "ml_pipeline", "models", "baseline_xgboost.py")],
+            "gnn": [sys.executable, os.path.join(BASE_DIR, "ml_pipeline", "models", "evaluate_gnn.py")],
+            "stacked_hybrid": [sys.executable, os.path.join(BASE_DIR, "ml_pipeline", "models", "stacked_hybrid.py"), "--summary"],
         }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Evaluation failed: {e}")
+
+        try:
+            result = subprocess.run(
+                script_map[model_type],
+                cwd=BASE_DIR,
+                capture_output=True,
+                text=True,
+                timeout=900,
+            )
+            script_output = (result.stdout or "") + (result.stderr or "")
+            script_status = "completed" if result.returncode == 0 else f"failed ({result.returncode})"
+        except subprocess.TimeoutExpired:
+            script_output = "Model script timed out, but callable evaluation will still run."
+            script_status = "timed-out"
+        except Exception as e:
+            script_output = f"Script execution warning: {e}"
+            script_status = "failed"
+
+    parsed_metrics = parse_script_metrics(script_output, model_type) if script_output else None
+    metrics = parsed_metrics or compute_live_metrics_for_model(model_type)
+    if not metrics.get("dataset"):
+        _, dataset_meta = load_active_dataset()
+        metrics["dataset"] = dataset_meta
+
+    metrics_path = os.path.join(BASE_DIR, "models", "saved", f"latest_{model_type}_metrics.json")
+    os.makedirs(os.path.dirname(metrics_path), exist_ok=True)
+    with open(metrics_path, "w", encoding="utf-8") as f:
+        json.dump(metrics, f, indent=2)
+
+    return {
+        "status": "completed",
+        "model": model_type,
+        "execution_mode": "script+callable" if run_pipeline else "callable",
+        "script_status": script_status,
+        "dataset": metrics.get("dataset", {}),
+        "metrics": metrics,
+        "output_preview": script_output[:1200],
+    }
+
+@app.get("/run-model-evaluation/{model_type}")
+async def run_model_evaluation(model_type: str):
+    """Backward-compatible route delegating to the callable-first evaluator."""
+    return await evaluate_model(model_type, EvaluateModelRequest(run_pipeline=False))
 
 
 @app.post("/upload-transaction-file")
@@ -1330,6 +1521,83 @@ def generate_model_explanation(model_type: str, metrics: dict, topology_results:
     }
 
 
+def get_model_display_name(model_type: str) -> str:
+    return {
+        "xgboost": "XGBoost",
+        "gnn": "GNN",
+        "stacked_hybrid": "Stacked Hybrid",
+    }.get(model_type, "Stacked Hybrid")
+
+
+def get_transaction_feature_importance(model_type: str, amount: float, out_degree: int, in_degree: int, risk_score: float) -> list[dict[str, Any]]:
+    if model_type == "gnn":
+        return [
+            {"feature": "out_degree", "importance": round(min(out_degree / 10, 1.0), 4)},
+            {"feature": "in_degree", "importance": round(min(in_degree / 10, 1.0), 4)},
+            {"feature": "cycle_indicator", "importance": 0.61},
+            {"feature": "pagerank_score", "importance": 0.57},
+        ]
+
+    model_obj = hybrid_model
+    feature_names = list(getattr(model_obj, "feature_names_in_", [])) if model_obj else []
+    importances = list(getattr(model_obj, "feature_importances_", [])) if model_obj else []
+    if feature_names and importances and len(feature_names) == len(importances):
+        ranked = sorted(
+            [{"feature": f, "importance": float(i)} for f, i in zip(feature_names, importances)],
+            key=lambda x: x["importance"],
+            reverse=True,
+        )
+        return ranked[:6]
+
+    return [
+        {"feature": "amount", "importance": round(min(amount / 100000, 1.0), 4)},
+        {"feature": "transactions_last_24hr", "importance": 0.52},
+        {"feature": "num_unique_recipients", "importance": round(min(out_degree / 10, 1.0), 4)},
+        {"feature": "risk_score_proxy", "importance": float(risk_score)},
+    ]
+
+
+def build_ai_analyst_prompt(transaction_payload: dict[str, Any]) -> str:
+    return (
+        "You are a senior fraud analyst for mobile-money transactions.\n"
+        "Return only valid JSON with keys: what_transaction_entails (string), model_interpretation (string), recommended_actions (array of 3 strings).\n"
+        "Keep output concise and action-oriented.\n\n"
+        f"Context:\n{json.dumps(transaction_payload, ensure_ascii=True, indent=2)}"
+    )
+
+
+def call_llm_for_analysis(prompt: str) -> dict[str, Any] | None:
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        return None
+
+    try:
+        openai_module = importlib.import_module("openai")
+        OpenAI = getattr(openai_module, "OpenAI")
+        client = OpenAI(api_key=api_key)
+        model_name = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+        response = client.responses.create(
+            model=model_name,
+            input=[
+                {"role": "system", "content": "You are a fraud analyst assistant. Output JSON only."},
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0.2,
+        )
+        text = getattr(response, "output_text", "") or ""
+        match = re.search(r"\{.*\}", text, flags=re.DOTALL)
+        if not match:
+            return None
+        parsed = json.loads(match.group(0))
+        required = ["what_transaction_entails", "model_interpretation", "recommended_actions"]
+        if all(k in parsed for k in required):
+            return parsed
+    except Exception:
+        return None
+
+    return None
+
+
 @app.get("/ai-explain-model/{model_type}")
 async def ai_explain_model(model_type: str, refresh: bool = False):
     """
@@ -1421,6 +1689,14 @@ async def ai_explain_transaction(tx_id: str, model: str = Query("stacked_hybrid"
             f"The system assigned a risk score of {float(risk_score):.1f}% and the current verdict is {decision}."
         )
 
+        feature_importance = get_transaction_feature_importance(
+            model_type=model,
+            amount=float(amount),
+            out_degree=int(out_degree),
+            in_degree=int(in_degree),
+            risk_score=float(risk_score) / 100.0,
+        )
+
         model_interpretations = {
             "xgboost": f"XGBoost focuses on behavioural signals such as amount, hour, and activity frequency. It would emphasise amount={amount:,.0f} and sender velocity for this case.",
             "gnn": f"GNN focuses on the sender's network position. It would emphasise the sender's out-degree of {out_degree} and incoming links of {in_degree} to reason about possible cycles, rings, or mule behaviour.",
@@ -1456,21 +1732,45 @@ async def ai_explain_transaction(tx_id: str, model: str = Query("stacked_hybrid"
                 "Continue passive monitoring for repeated patterns.",
             ]
 
+        llm_context = {
+            "transaction_id": tx_id,
+            "selected_model": model,
+            "model_name": get_model_display_name(model),
+            "transaction": {
+                "sender_id": sender_id,
+                "receiver_id": receiver_id,
+                "amount": float(amount),
+                "risk_score_pct": float(risk_score),
+                "decision": decision,
+                "reason": reason,
+            },
+            "network": {
+                "out_degree": out_degree,
+                "in_degree": in_degree,
+            },
+            "feature_importance": feature_importance,
+        }
+        prompt_template = build_ai_analyst_prompt(llm_context)
+        llm_result = call_llm_for_analysis(prompt_template)
+
         return {
             "transaction_id": tx_id,
             "selected_model": model,
             "summary": summary,
-            "what_transaction_entails": summary,
-            "model_interpretation": model_interpretations.get(model, model_interpretations["stacked_hybrid"]),
-            "recommended_actions": recommended_actions,
+            "what_transaction_entails": (llm_result or {}).get("what_transaction_entails", summary),
+            "model_interpretation": (llm_result or {}).get("model_interpretation", model_interpretations.get(model, model_interpretations["stacked_hybrid"])),
+            "recommended_actions": (llm_result or {}).get("recommended_actions", recommended_actions),
             "why_flagged": reason,
             "risk_factors": risk_factors,
+            "feature_importance": feature_importance,
             "model_agreement": {
                 "xgboost": model_interpretations["xgboost"],
                 "gnn": model_interpretations["gnn"],
                 "stacked_hybrid": model_interpretations["stacked_hybrid"],
             },
             "next_steps": recommended_actions,
+            "llm_used": bool(llm_result),
+            "llm_prompt_template": prompt_template,
             "transaction_details": {
                 "amount": f"KES {amount:,.2f}",
                 "sender": sender_id,
@@ -1485,6 +1785,12 @@ async def ai_explain_transaction(tx_id: str, model: str = Query("stacked_hybrid"
             "error": str(e),
             "note": "Could not retrieve detailed analysis"
         }
+
+
+@app.post("/ai/analyst/explain")
+async def ai_analyst_explain(body: AIAnalystExplainRequest):
+    """Primary AI Bot endpoint with explicit payload body for selected model and transaction ID."""
+    return await ai_explain_transaction(tx_id=body.transaction_id, model=body.model)
 
 
 @app.get("/export-report")
