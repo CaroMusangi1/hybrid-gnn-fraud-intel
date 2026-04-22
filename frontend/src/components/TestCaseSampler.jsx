@@ -5,9 +5,10 @@ import axios from 'axios';
 export default function TestCaseSampler({ onCaseSelect }) {
   const [cases, setCases] = useState([]);
   const [selectedCase, setSelectedCase] = useState(null);
-  const [predictions, setPredictions] = useState({});
+  const [prediction, setPrediction] = useState(null);
   const [loading, setLoading] = useState(false);
   const [model, setModel] = useState('stacked_hybrid');
+  const [error, setError] = useState(null);
 
   // Fetch test cases
   useEffect(() => {
@@ -21,24 +22,30 @@ export default function TestCaseSampler({ onCaseSelect }) {
       .catch(err => console.error('Error fetching test cases:', err));
   }, []);
 
-  // Fetch predictions when case or model changes
-  useEffect(() => {
-    if (!selectedCase) return;
+  const currentCase = cases.find(c => c.id === selectedCase);
+
+  const handleRunTestCases = async () => {
+    if (!currentCase) return;
 
     setLoading(true);
-    axios.post(`http://127.0.0.1:8000/predict-on-case?case_id=${selectedCase}&model=${model}`)
-      .then(res => {
-        setPredictions(prev => ({
-          ...prev,
-          [selectedCase + model]: res.data
-        }));
-      })
-      .catch(err => console.error('Error fetching prediction:', err))
-      .finally(() => setLoading(false));
-  }, [selectedCase, model]);
+    setError(null);
+    setPrediction(null);
 
-  const currentCase = cases.find(c => c.id === selectedCase);
-  const currentPrediction = predictions[selectedCase + model];
+    try {
+      const response = await axios.post('http://127.0.0.1:8000/api/models/run-live-test', {
+        model,
+        case_id: currentCase.id,
+        sample: currentCase.data,
+      });
+      setPrediction(response.data);
+      onCaseSelect?.(response.data);
+    } catch (err) {
+      console.error('Error running live test:', err);
+      setError('Could not run live test for the selected model and case.');
+    } finally {
+      setLoading(false);
+    }
+  };
 
   const getCaseColor = (fraudType) => {
     if (fraudType.includes('Network')) return 'border-purple-200 bg-purple-50';
@@ -85,6 +92,18 @@ export default function TestCaseSampler({ onCaseSelect }) {
               </button>
             ))}
           </div>
+          <button
+            onClick={handleRunTestCases}
+            disabled={!currentCase || loading}
+            className="mt-4 inline-flex items-center justify-center rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-blue-300"
+          >
+            {loading ? 'Running Test Cases...' : 'Run Test Cases'}
+          </button>
+          {error && (
+            <div className="mt-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+              {error}
+            </div>
+          )}
         </div>
 
         {/* Case Selection Grid */}
@@ -129,38 +148,38 @@ export default function TestCaseSampler({ onCaseSelect }) {
             </div>
 
             {/* Prediction Result */}
-            {currentPrediction && (
+            {prediction && (
               <div
                 className={`p-4 rounded-lg border-2 ${
-                  currentPrediction.predicted === currentPrediction.true_label
+                  prediction.predicted === prediction.true_label
                     ? 'bg-green-50 border-green-200'
                     : 'bg-red-50 border-red-200'
                 }`}
               >
                 <div className="flex items-center justify-between mb-2">
                   <span className="font-bold text-gray-900">
-                    Prediction: {currentPrediction.predicted === 1 ? 'FRAUD' : 'LEGITIMATE'}
+                    Prediction: {prediction.predicted === 1 ? 'FRAUD' : 'LEGITIMATE'}
                   </span>
                   <span className="text-sm font-semibold">
-                    Confidence: {(currentPrediction.confidence * 100).toFixed(1)}%
+                    Confidence: {(prediction.confidence * 100).toFixed(1)}%
                   </span>
                 </div>
                 <div className="text-sm text-gray-700">
-                  {currentPrediction.explanation}
+                  {prediction.explanation}
                 </div>
-                {currentPrediction.topology_explanation && (
+                {prediction.topology_explanation && (
                   <div className="mt-2 text-xs text-indigo-700 bg-indigo-50 border border-indigo-200 rounded p-2">
-                    {currentPrediction.topology_explanation}
+                    {prediction.topology_explanation}
                   </div>
                 )}
                 <div className="mt-2 text-xs text-gray-600">
-                  True Label: {currentPrediction.true_label === 1 ? 'FRAUD' : 'LEGITIMATE'} •{' '}
-                  {currentPrediction.correct ? '✓ Correct' : '✗ Incorrect'}
+                  True Label: {prediction.true_label === 1 ? 'FRAUD' : 'LEGITIMATE'} •{' '}
+                  {prediction.caught ? 'Caught' : prediction.missed ? 'Missed' : prediction.correct ? '✓ Correct' : '✗ Incorrect'}
                 </div>
               </div>
             )}
 
-            {loading && <div className="text-center text-gray-500 text-sm">Loading prediction...</div>}
+            {loading && <div className="text-center text-gray-500 text-sm">Running live inference...</div>}
           </div>
         )}
 
