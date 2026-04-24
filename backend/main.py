@@ -1,7 +1,9 @@
 from fastapi import FastAPI, HTTPException, Query, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from neo4j import GraphDatabase
+import asyncio, json
 import pandas as pd
 import numpy as np
 import xgboost as xgb
@@ -17,7 +19,7 @@ import json
 import tempfile
 import importlib
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, Optional
 
 # 1. INITIALIZE APP & CONNECTIONS 
 app = FastAPI(title="M-Pesa Fraud Intelligence API", version="1.0")
@@ -31,6 +33,63 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# 2. ALERTING SYSTEM SETUP
+connected_clients: dict[str, list[asyncio.Queue]] = {}
+
+# ✅ Class must be defined BEFORE the endpoint that uses it
+class AlertPayload(BaseModel):
+    userId: Optional[str] = None
+    type: str
+    message: str
+    score: int
+
+@app.get("/alerts/stream/{user_id}")
+async def stream_alerts(user_id: str):
+    queue = asyncio.Queue()
+    if user_id not in connected_clients:
+        connected_clients[user_id] = []
+    connected_clients[user_id].append(queue)
+
+    async def event_generator():
+        try:
+            while True:
+                try:
+                    # Wait max 25s, then send a keepalive ping
+                    data = await asyncio.wait_for(queue.get(), timeout=25)
+                    yield f"data: {json.dumps(data)}\n\n"
+                except asyncio.TimeoutError:
+                    yield ": ping\n\n"  # SSE comment line, keeps connection alive
+        except asyncio.CancelledError:
+            if queue in connected_clients.get(user_id, []):
+                connected_clients[user_id].remove(queue)
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+async def push_alert(user_id: str, alert: dict):
+    for queue in connected_clients.get(user_id, []):
+        await queue.put(alert)
+
+@app.post("/alerts/send")
+async def send_alert(payload: AlertPayload):  # ✅ Now AlertPayload is already defined
+    alert = {
+        "id": f"TXN_{int(asyncio.get_event_loop().time() * 1000)}",
+        "type": payload.type,
+        "message": payload.message,
+        "score": payload.score,
+        "status": "High" if payload.score >= 80 else "Medium",
+        "amount": "Ksh 0.00",
+        "sender": "SYSTEM",
+        "receiver": "analyst_01",
+    }
+    if payload.userId:
+        for queue in connected_clients.get(payload.userId, []):
+            await queue.put(alert)
+    else:
+        for queues in connected_clients.values():
+            for queue in queues:
+                await queue.put(alert)
+
+    return {"status": "sent", "alert": alert}
 
 # Neo4j Connection (Update with your local credentials)
 URI = "neo4j://localhost:7687"
@@ -41,12 +100,16 @@ driver = GraphDatabase.driver(URI, auth=AUTH)
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 MODEL_PATH = os.path.join(BASE_DIR, "models", "saved", "hybrid_xgboost.pkl")
 
+hybrid_model = None
 try:
     with open(MODEL_PATH, "rb") as f:
         hybrid_model = pickle.load(f)
     print(f"✅ SUCCESS: AI Brain loaded from {MODEL_PATH}")
 except FileNotFoundError:
-    print(f"Warning: Model file not found at {MODEL_PATH}. API will fail on prediction.")
+    print(f"❌ ERROR: Model file not found at {MODEL_PATH}")
+    print(f"   Please run: python ml_pipeline/models/stacked_hybrid.py")
+except Exception as e:
+    print(f"❌ ERROR: Failed to load model: {str(e)}")
 
 
 #  SQLITE DATABASE INITIALIZATION 
@@ -678,6 +741,9 @@ async def predict_fraud(tx: TransactionRequest):
 
     # 3. Model Inference
     try:
+        # Check if model is loaded
+        if hybrid_model is None:
+            raise RuntimeError("Hybrid model is not loaded. Please restart the server or check the model file.")
         # Wrap it in float() to convert from numpy to native Python float
         risk_score = float(hybrid_model.predict_proba(features)[0][1])
         print(f"✅ XGBoost Calculation Success! Real Risk Score: {risk_score}")
@@ -698,6 +764,18 @@ async def predict_fraud(tx: TransactionRequest):
     """, (tx.transaction_id, datetime.now(), tx.sender_id, tx.receiver_id, tx.amount, final_score_percentage, decision, reason))
     conn.commit()
     conn.close()
+
+    if decision in ("CONFIRMED_FRAUD", "AUTO_FREEZE", "REQUIRE_HUMAN"):
+      asyncio.create_task(push_alert("analyst_01", {
+        "id": tx.transaction_id,
+        "type": decision,
+        "message": reason,
+        "score": int(final_score_percentage),
+        "status": "High" if final_score_percentage >= 80 else "Medium",
+        "amount": f"Ksh {tx.amount:,.2f}",
+        "sender": tx.sender_id,
+        "receiver": tx.receiver_id,
+    }))
 
     return PredictionResponse(
         transaction_id=tx.transaction_id,
@@ -1345,39 +1423,42 @@ async def upload_transaction_file(file: UploadFile = File(...)):
 
 @app.post("/run-transaction-comparison")
 async def run_transaction_comparison(transaction_data: dict):
-    """
-    Run a transaction through all 3 models and return comparison.
-    """
     try:
-        # Prepare features
-        features = pd.DataFrame([{
-            "amount": transaction_data.get("amount", 500),
+        amount = float(transaction_data.get("amount", 500))
+        hour = int(transaction_data.get("hour", 12))
+
+        # Build a single-row DataFrame matching the standard schema
+        row = pd.DataFrame([{
+            "transaction_id": transaction_data.get("transaction_id", "TXN_000"),
+            "sender_id": transaction_data.get("sender_id", "UNKNOWN_SENDER"),
+            "receiver_id": transaction_data.get("receiver_id", "UNKNOWN_RECEIVER"),
+            "amount": amount,
             "num_accounts_linked": transaction_data.get("num_accounts_linked", 1),
             "shared_device_flag": transaction_data.get("shared_device_flag", 0),
-            "avg_transaction_amount": transaction_data.get("avg_transaction_amount", 1500),
+            "avg_transaction_amount": transaction_data.get("avg_transaction_amount", 1500.0),
             "transaction_frequency": transaction_data.get("transaction_frequency", 2),
             "num_unique_recipients": transaction_data.get("num_unique_recipients", 1),
-            "transactions_last_24hr": transaction_data.get("transactions_last_24hr", 1),
-            "round_amount_flag": 1 if transaction_data.get("amount", 0) % 100 == 0 else 0,
-            "night_activity_flag": 1 if transaction_data.get("hour", 12) < 5 else 0,
-            "hour": transaction_data.get("hour", 12),
+            "transactions_last_24hr": int(transaction_data.get("transactions_last_24hr", 1)),
+            "round_amount_flag": 1 if amount % 100 == 0 else 0,
+            "night_activity_flag": 1 if hour < 5 else 0,
+            "hour": hour,
             "triad_closure_score": transaction_data.get("triad_closure_score", 0.1),
             "pagerank_score": transaction_data.get("pagerank_score", 0.005),
-            "in_degree": transaction_data.get("in_degree", 1),
+            "in_degree": transaction_data.get("in_degree", 2),
             "out_degree": transaction_data.get("out_degree", 1),
             "cycle_indicator": transaction_data.get("cycle_indicator", 0),
-            "gnn_fraud_risk_score": transaction_data.get("gnn_fraud_risk_score", 0.45)
+            "is_fraud": 0,
+            "fraud_scenario": "normal"
         }])
-        
-        # Get predictions from all models
-        xgboost_score = float(hybrid_model.predict_proba(features)[0][1]) if hybrid_model else 0.5
-        
-        # Simulate GNN score (in real scenario, would load actual GNN model)
-        gnn_score = transaction_data.get("gnn_fraud_risk_score", 0.45)
-        
-        # Hybrid score
-        hybrid_score = (xgboost_score * 0.6) + (gnn_score * 0.4)
-        
+
+        # ✅ Use the same function /predict uses — handles embeddings automatically
+        feature_frame = prepare_hybrid_feature_frame(row)
+
+        xgboost_score = float(hybrid_model.predict_proba(feature_frame)[0][1]) if hybrid_model else 0.5
+        gnn_score = float(transaction_data.get("gnn_fraud_risk_score", 0.45))
+        hybrid_score = round((xgboost_score * 0.6) + (gnn_score * 0.4), 4)
+        models_flagged = sum([xgboost_score > 0.5, gnn_score > 0.5, hybrid_score > 0.5])
+
         return {
             "transaction_id": transaction_data.get("transaction_id", "TXN_000"),
             "models": {
@@ -1397,9 +1478,10 @@ async def run_transaction_comparison(transaction_data: dict):
                     "model_name": "Stacked Hybrid"
                 }
             },
-            "consensus": "FRAUD" if sum([xgboost_score > 0.5, gnn_score > 0.5, hybrid_score > 0.5]) >= 2 else "LEGITIMATE"
+            "models_flagged": models_flagged,
+            "consensus": "FRAUD" if models_flagged >= 2 else "LEGITIMATE"
         }
-        
+
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Comparison error: {str(e)}")
 

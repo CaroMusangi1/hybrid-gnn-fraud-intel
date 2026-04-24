@@ -1,12 +1,14 @@
 import { useState, useEffect } from 'react';
+import { useAlerts } from '../context/AlertsContext';
 import axios from 'axios';
 import { ShieldAlert, CheckCircle, XCircle, Clock, Search, ChevronRight } from 'lucide-react';
 
 export default function Alerts() {
+  const { liveAlerts } = useAlerts();
   const [alerts, setAlerts] = useState([]);
   const [loading, setLoading] = useState(true);
   const [selectedAlert, setSelectedAlert] = useState(null);
-
+ 
   // Fetch the flagged transactions from our SQLite database
   useEffect(() => {
     const fetchAlerts = async () => {
@@ -24,6 +26,20 @@ export default function Alerts() {
     };
     fetchAlerts();
   }, []);
+
+//Merge incoming SSE alerts from context with the initial fetch, ensuring no duplicates and always showing the latest on top
+useEffect(() => {
+  if (liveAlerts.length === 0) return;
+  const newest = liveAlerts[0]; // Layout prepends, so index 0 is always the latest
+
+  setAlerts((prev) => {
+    // Guard against duplicates
+    if (prev.find((a) => a.id === newest.id)) return prev;
+    return [newest, ...prev];
+  });
+
+  setSelectedAlert(newest); // Auto-open the new alert in the right panel
+}, [liveAlerts]);
 
   // Simulate an analyst reviewing and resolving the ticket
  const handleResolve = async (id, action) => {

@@ -458,9 +458,9 @@ export default function Transactions() {
                   {/* Model Scores */}
                   <div className="grid grid-cols-3 gap-3">
                     {[
-                      { name: 'XGBoost', score: uploadedTxComparison.xgboost_score },
-                      { name: 'GNN', score: uploadedTxComparison.gnn_score },
-                      { name: 'Hybrid', score: uploadedTxComparison.hybrid_score }
+                      { name: 'XGBoost', score: uploadedTxComparison.models?.xgboost?.score },
+                      { name: 'GNN', score: uploadedTxComparison.models?.gnn?.score },
+                      { name: 'Hybrid', score: uploadedTxComparison.models?.stacked_hybrid?.score }
                     ].map(m => (
                       <div key={m.name} className={`p-4 rounded-lg border-2 ${
                         m.score > 0.7 ? 'border-red-200 bg-red-50' :
@@ -492,7 +492,7 @@ export default function Transactions() {
                       {uploadedTxComparison.consensus}
                     </p>
                     <p className="text-xs text-gray-600 mt-1">
-                      {uploadedTxComparison.models_flagged}/3 models flagged this
+                      {uploadedTxComparison.models_flagged ?? '?'}/3 models flagged this
                     </p>
                   </div>
                 </div>
