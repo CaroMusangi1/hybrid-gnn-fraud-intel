@@ -68,8 +68,21 @@ export default function Transactions() {
       } else if (status === 404) {
         message = 'API endpoint not found. Backend may not be running.';
       } else {
-        message = `Server error: ${status}`;
-        details = data.detail || data.message || JSON.stringify(data);
+        const detail = data.detail;
+        if (typeof detail === 'object' && detail !== null && !Array.isArray(detail)) {
+          message = typeof detail.message === 'string' ? detail.message : `Server error: ${status}`;
+          if (Array.isArray(detail.missing_columns) && detail.missing_columns.length > 0) {
+            details = `Missing columns: ${detail.missing_columns.join(', ')}`;
+            if (Array.isArray(detail.received_columns) && detail.received_columns.length > 0) {
+              details += `. Received: ${detail.received_columns.join(', ')}`;
+            }
+          } else {
+            details = JSON.stringify(detail);
+          }
+        } else {
+          message = `Server error: ${status}`;
+          details = typeof detail === 'string' ? detail : (data.message || JSON.stringify(data));
+        }
       }
     } else if (err.request && !err.response) {
       // Request was made but no response received

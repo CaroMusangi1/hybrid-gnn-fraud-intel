@@ -337,6 +337,10 @@ def extract_transactions_from_text(text: str) -> pd.DataFrame:
                 "amount": float(amount_match.group(2)) if amount_match else 0.0,
                 "hour": int(hour_match.group(1)) if hour_match else 12,
                 "transactions_last_24hr": 1,
+                "device_id": f"DOC_DEVICE_{idx+1}",
+                "agent_id": f"DOC_AGENT_{idx+1}",
+                "is_fraud": 0,
+                "fraud_scenario": "normal",
             })
 
     if not extracted_rows:
@@ -347,6 +351,10 @@ def extract_transactions_from_text(text: str) -> pd.DataFrame:
             "amount": 0.0,
             "hour": 12,
             "transactions_last_24hr": 1,
+            "device_id": "DOC_DEVICE_1",
+            "agent_id": "DOC_AGENT_1",
+            "is_fraud": 0,
+            "fraud_scenario": "normal",
         })
 
     return pd.DataFrame(extracted_rows)
