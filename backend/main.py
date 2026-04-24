@@ -207,6 +207,10 @@ COLUMN_ALIASES = {
     "transactionid": "transaction_id",
     "amount_kes": "amount",
     "velocity_24hr": "transactions_last_24hr",
+    "device": "device_id",
+    "deviceid": "device_id",
+    "agent": "agent_id",
+    "agentid": "agent_id",
     "sender": "sender_id",
     "source": "sender_id",
     "receiver": "receiver_id",
@@ -225,16 +229,9 @@ COLUMN_ALIASES = {
 LIVE_SAMPLE_CATEGORICAL_COLUMNS = ["device_id", "agent_id", "sender_id", "receiver_id"]
 LIVE_SAMPLE_TARGET_COLUMNS = ["is_fraud", "fraud_scenario", "transaction_id"]
 LIVE_SAMPLE_REQUIRED_COLUMNS = [
-    "transaction_id",
     "sender_id",
     "receiver_id",
     "amount",
-    "transactions_last_24hr",
-    "hour",
-    "device_id",
-    "agent_id",
-    "is_fraud",
-    "fraud_scenario",
 ]
 TABULAR_MODEL_FEATURES = [
     "amount",
@@ -923,6 +920,25 @@ def _clear_temporary_sample_cache() -> dict[str, Any]:
 
 def ensure_live_sample_schema(df: pd.DataFrame) -> pd.DataFrame:
     normalized_df = _normalize_columns(df.copy())
+
+    if "timestamp" in normalized_df.columns and "hour" not in normalized_df.columns:
+        parsed_ts = pd.to_datetime(normalized_df["timestamp"], errors="coerce")
+        normalized_df["hour"] = parsed_ts.dt.hour
+
+    default_columns = {
+        "transaction_id": [f"LIVE_TXN_{index + 1:06d}" for index in range(len(normalized_df))],
+        "transactions_last_24hr": 1,
+        "hour": 12,
+        "device_id": [f"LIVE_DEVICE_{index + 1}" for index in range(len(normalized_df))],
+        "agent_id": [f"LIVE_AGENT_{index + 1}" for index in range(len(normalized_df))],
+        "is_fraud": 0,
+        "fraud_scenario": "normal",
+    }
+
+    for column, default_value in default_columns.items():
+        if column not in normalized_df.columns:
+            normalized_df[column] = default_value
+
     missing_columns = [column for column in LIVE_SAMPLE_REQUIRED_COLUMNS if column not in normalized_df.columns]
     if missing_columns:
         raise HTTPException(
@@ -2075,32 +2091,13 @@ async def run_model_evaluation(model_type: str):
 
 
 @app.post("/upload-transaction-file")
-async def upload_transaction_file(file: UploadFile = File(...)):
+def upload_transaction_file(file: UploadFile = File(...)):
     """Upload CSV/PDF/Word, standardize it into the ML schema, persist it, and make it active for the Models page."""
     try:
-        content = await file.read()
+        content = file.file.read()
         filename = (file.filename or 'uploaded_file').lower()
 
-        if filename.endswith('.csv'):
-            raw_df = pd.read_csv(io.BytesIO(content))
-        elif filename.endswith('.pdf'):
-            try:
-                import PyPDF2
-                pdf_reader = PyPDF2.PdfReader(io.BytesIO(content))
-                text = "\n".join([(page.extract_text() or '') for page in pdf_reader.pages])
-                raw_df = extract_transactions_from_text(text)
-            except ImportError:
-                raise HTTPException(status_code=400, detail='PDF parsing requires PyPDF2')
-        elif filename.endswith(('.docx', '.doc')):
-            try:
-                from docx import Document
-                document = Document(io.BytesIO(content))
-                text = "\n".join([p.text for p in document.paragraphs])
-                raw_df = extract_transactions_from_text(text)
-            except ImportError:
-                raise HTTPException(status_code=400, detail='Word parsing requires python-docx')
-        else:
-            raise HTTPException(status_code=400, detail='Unsupported file format. Use CSV, PDF, or Word')
+        raw_df = _parse_uploaded_sample_file(content, filename)
 
         standardized_df = standardize_transactions_df(raw_df)
         dataset_meta = save_active_dataset(standardized_df, filename)
@@ -2118,13 +2115,13 @@ async def upload_transaction_file(file: UploadFile = File(...)):
 
 
 @app.post("/api/samples/load")
-async def load_temporary_sample(file: UploadFile = File(...)):
+def load_temporary_sample(file: UploadFile = File(...)):
     """
     Parse a CSV/PDF/Word upload and cache the raw uploaded rows temporarily.
     Zone 2 inference later performs strict schema validation and model-specific preprocessing.
     """
     try:
-        content = await file.read()
+        content = file.file.read()
         filename = (file.filename or "uploaded_file").lower()
 
         if filename.endswith('.csv'):
@@ -2939,3 +2936,9 @@ async def export_user_data():
 async def logout_all_sessions():
     """Logout from all active sessions"""
     return {"status": "success", "message": "Signed out from all sessions"}
+
+
+if __name__ == "__main__":
+    import uvicorn
+
+    uvicorn.run(app, host="127.0.0.1", port=8000)

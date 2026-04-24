@@ -54,7 +54,10 @@ export default function Transactions() {
     let message = 'An error occurred';
     let details = null;
 
-    if (err.response) {
+    if (err.code === 'ECONNABORTED') {
+      message = 'Request timeout. Backend server may be slow or unresponsive.';
+      details = 'Try again or check backend logs';
+    } else if (err.response) {
       // API returned an error response
       const status = err.response.status;
       const data = err.response.data;
@@ -89,9 +92,6 @@ export default function Transactions() {
       message = 'Cannot connect to backend server';
       details = 'Is FastAPI running on http://127.0.0.1:8000?';
       setApiHealthy(false);
-    } else if (err.code === 'ECONNABORTED') {
-      message = 'Request timeout. Backend server may be slow or unresponsive.';
-      details = 'Try again or check backend logs';
     } else if (err.message) {
       message = err.message;
     }
