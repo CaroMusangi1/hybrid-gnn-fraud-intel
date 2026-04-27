@@ -6,6 +6,8 @@ export default function Reports() {
   const [stats, setStats] = useState({ kpis: {}, pie: {}, alerts: [] });
   const [loading, setLoading] = useState(true);
   const [dateRange, setDateRange] = useState('month');
+  const [exporting, setExporting] = useState(false);
+  const [exportError, setExportError] = useState(null);
 
   useEffect(() => {
     // Fetch real dashboard stats from backend
@@ -54,8 +56,42 @@ export default function Reports() {
     },
   ];
 
-  const handleDownload = (id) => {
-    alert(`Generating encrypted PDF for ${id}. In production, this would trigger secure download for regulatory compliance.`);
+  const handleDownload = async (id, format = 'pdf') => {
+    setExporting(true);
+    setExportError(null);
+    try {
+      const response = await axios.get(`http://127.0.0.1:8000/export-report?report_id=${id}&format=${format}`, {
+        responseType: format === 'pdf' || format === 'csv' ? 'blob' : 'json',
+      });
+
+      if (format === 'json') {
+        // For JSON, just return the data
+        console.log('Report data:', response.data);
+        alert('Report exported successfully as JSON. Check console for details.');
+        setExporting(false);
+        return;
+      }
+
+      // For PDF and CSV, trigger file download
+      const blob = response.data;
+      const url = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      
+      const timestamp = new Date().toISOString().split('T')[0];
+      const filename = `compliance_report_${id}_${timestamp}.${format}`;
+      link.setAttribute('download', filename);
+      document.body.appendChild(link);
+      link.click();
+      window.URL.revokeObjectURL(url);
+      document.body.removeChild(link);
+      
+      setExporting(false);
+    } catch (err) {
+      console.error('Export failed:', err);
+      setExportError(`Failed to export report: ${err.response?.data?.detail || err.message}`);
+      setExporting(false);
+    }
   };
 
   const fraudRate = loading ? 0 : ((stats.kpis?.fraud_count || 0) / (stats.kpis?.total_transactions || 1) * 100).toFixed(2);
@@ -78,14 +114,44 @@ export default function Reports() {
             <option value="quarter">This Quarter</option>
             <option value="year">This Year</option>
           </select>
-          <button 
-            onClick={() => handleDownload('CURRENT_MONTH')}
-            className="flex items-center gap-2 bg-brandPrimary hover:bg-indigo-700 text-white px-4 py-2 rounded-lg font-medium transition-colors"
-          >
-            <Download size={18} /> Export Report
-          </button>
+          <div className="flex gap-2">
+            <button 
+              onClick={() => handleDownload('CURRENT_MONTH', 'pdf')}
+              disabled={exporting}
+              className="flex items-center gap-2 bg-brandPrimary hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed text-white px-4 py-2 rounded-lg font-medium transition-colors"
+            >
+              <Download size={18} /> {exporting ? 'Exporting...' : 'Export PDF'}
+            </button>
+            <button 
+              onClick={() => handleDownload('CURRENT_MONTH', 'csv')}
+              disabled={exporting}
+              className="flex items-center gap-2 bg-green-600 hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed text-white px-4 py-2 rounded-lg font-medium transition-colors"
+            >
+              <Download size={18} /> {exporting ? 'Exporting...' : 'Export CSV'}
+            </button>
+            <button 
+              onClick={() => handleDownload('CURRENT_MONTH', 'json')}
+              disabled={exporting}
+              className="flex items-center gap-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed text-white px-4 py-2 rounded-lg font-medium transition-colors"
+            >
+              <Download size={18} /> {exporting ? 'Exporting...' : 'Export JSON'}
+            </button>
+          </div>
         </div>
       </div>
+
+      {/* Export Error Alert */}
+      {exportError && (
+        <div className="bg-red-50 border border-red-300 rounded-lg p-4">
+          <div className="flex items-center gap-3">
+            <AlertCircle className="text-red-600" size={20} />
+            <div>
+              <p className="font-semibold text-red-900">Export Failed</p>
+              <p className="text-sm text-red-800">{exportError}</p>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Real-time KPI Cards */}
       <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
@@ -222,12 +288,34 @@ export default function Reports() {
                   </td>
                   <td className="px-6 py-4 text-gray-500">{report.date}</td>
                   <td className="px-6 py-4 text-right">
-                    <button 
-                      onClick={() => handleDownload(report.id)}
-                      className="text-brandPrimary hover:text-indigo-800 font-medium text-sm transition-colors"
-                    >
-                      Download PDF
-                    </button>
+                    <div className="flex gap-2 justify-end">
+                      <button 
+                        onClick={() => handleDownload(report.id, 'pdf')}
+                        disabled={exporting}
+                        className="text-brandPrimary hover:text-indigo-800 disabled:opacity-50 disabled:cursor-not-allowed font-medium text-sm transition-colors"
+                        title="Download as PDF"
+                      >
+                        PDF
+                      </button>
+                      <span className="text-gray-300">|</span>
+                      <button 
+                        onClick={() => handleDownload(report.id, 'csv')}
+                        disabled={exporting}
+                        className="text-green-600 hover:text-green-800 disabled:opacity-50 disabled:cursor-not-allowed font-medium text-sm transition-colors"
+                        title="Download as CSV"
+                      >
+                        CSV
+                      </button>
+                      <span className="text-gray-300">|</span>
+                      <button 
+                        onClick={() => handleDownload(report.id, 'json')}
+                        disabled={exporting}
+                        className="text-blue-600 hover:text-blue-800 disabled:opacity-50 disabled:cursor-not-allowed font-medium text-sm transition-colors"
+                        title="Download as JSON"
+                      >
+                        JSON
+                      </button>
+                    </div>
                   </td>
                 </tr>
               ))}

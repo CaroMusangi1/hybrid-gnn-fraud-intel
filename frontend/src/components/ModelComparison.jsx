@@ -4,7 +4,7 @@ import axios from 'axios';
 
 const API_BASE = 'http://127.0.0.1:8000';
 const MODEL_CACHE_KEY = 'modelComparison:cache';
-const CLEARED_MODELS_KEY = 'modelComparison:cleared';
+const MODEL_RUN_OUTPUT_KEY = 'modelComparison:runOutputs';
 const SELECTED_MODEL_KEY = 'modelComparison:selectedModel';
 
 const readJson = (key, fallback) => {
@@ -19,11 +19,10 @@ const readJson = (key, fallback) => {
 export default function ModelComparison() {
   const [selectedModel, setSelectedModel] = useState(() => localStorage.getItem(SELECTED_MODEL_KEY) || 'stacked_hybrid');
   const [cache, setCache] = useState(() => readJson(MODEL_CACHE_KEY, {}));
-  const [clearedModels, setClearedModels] = useState(() => readJson(CLEARED_MODELS_KEY, {}));
+  const [runOutputs, setRunOutputs] = useState(() => readJson(MODEL_RUN_OUTPUT_KEY, {}));
   const [metrics, setMetrics] = useState(() => readJson(MODEL_CACHE_KEY, {})[localStorage.getItem(SELECTED_MODEL_KEY) || 'stacked_hybrid']?.metrics || null);
   const [loading, setLoading] = useState(false);
-  const [runningModel, setRunningModel] = useState(false);
-  const [datasetInfo, setDatasetInfo] = useState(() => readJson(MODEL_CACHE_KEY, {})[localStorage.getItem(SELECTED_MODEL_KEY) || 'stacked_hybrid']?.datasetInfo || null);
+  const [runningSuite, setRunningSuite] = useState(false);
   const [error, setError] = useState(null);
 
   const persistCache = (nextCache) => {
@@ -31,27 +30,22 @@ export default function ModelComparison() {
     localStorage.setItem(MODEL_CACHE_KEY, JSON.stringify(nextCache));
   };
 
-  const persistClearedModels = (nextClearedModels) => {
-    setClearedModels(nextClearedModels);
-    localStorage.setItem(CLEARED_MODELS_KEY, JSON.stringify(nextClearedModels));
+  const persistRunOutputs = (nextOutputs) => {
+    setRunOutputs(nextOutputs);
+    localStorage.setItem(MODEL_RUN_OUTPUT_KEY, JSON.stringify(nextOutputs));
   };
 
   const fetchModelMetrics = async (modelKey) => {
     setLoading(true);
     setError(null);
     try {
-      const [metricsRes, datasetRes] = await Promise.all([
-        axios.get(`${API_BASE}/model-metrics?model=${modelKey}`),
-        axios.get(`${API_BASE}/dataset-status`),
-      ]);
+      const metricsRes = await axios.get(`${API_BASE}/api/models/baseline-metrics?model=${modelKey}`);
       setMetrics(metricsRes.data);
-      setDatasetInfo(metricsRes.data?.dataset || datasetRes.data?.dataset || null);
       const nextCache = {
         ...cache,
         [modelKey]: {
           metrics: metricsRes.data,
-          datasetInfo: metricsRes.data?.dataset || datasetRes.data?.dataset || null,
-          source: 'backend-fetch',
+          source: 'baseline-metrics',
         },
       };
       persistCache(nextCache);
@@ -68,67 +62,48 @@ export default function ModelComparison() {
     const cachedEntry = cache[selectedModel];
     if (cachedEntry) {
       setMetrics(cachedEntry.metrics);
-      setDatasetInfo(cachedEntry.datasetInfo || cachedEntry.metrics?.dataset || null);
-      return;
-    }
-    if (clearedModels[selectedModel]) {
-      setMetrics(null);
-      setDatasetInfo(null);
       return;
     }
     fetchModelMetrics(selectedModel);
   }, [selectedModel]);
 
-  useEffect(() => {
-    const refresh = () => {
-      const nextCleared = { ...clearedModels };
-      delete nextCleared[selectedModel];
-      persistClearedModels(nextCleared);
-      fetchModelMetrics(selectedModel);
-    };
-    window.addEventListener('dataset-updated', refresh);
-    return () => window.removeEventListener('dataset-updated', refresh);
-  }, [selectedModel, cache, clearedModels]);
-
-  const handleRunModel = async () => {
-    setRunningModel(true);
+  const handleRunAllBaselineModels = async () => {
+    setRunningSuite(true);
     setError(null);
     try {
-      const response = await axios.get(`${API_BASE}/run-model-evaluation/${selectedModel}`);
-      const nextMetrics = response.data.metrics || response.data;
-      const nextDataset = response.data.dataset || response.data.metrics?.dataset || null;
-      setMetrics(nextMetrics);
-      setDatasetInfo(nextDataset);
-      const nextCache = {
-        ...cache,
-        [selectedModel]: {
-          metrics: nextMetrics,
-          datasetInfo: nextDataset,
-          source: 'run-model-evaluation',
-          scriptStatus: response.data.script_status,
-        },
-      };
-      persistCache(nextCache);
-      const nextCleared = { ...clearedModels };
-      delete nextCleared[selectedModel];
-      persistClearedModels(nextCleared);
-    } catch (err) {
-      console.error('Error running model:', err);
-      setError('Model evaluation failed. Check that the backend and model scripts are available.');
-    } finally {
-      setRunningModel(false);
-    }
-  };
+      const response = await axios.post(`${API_BASE}/api/models/run-baseline-suite`);
+      const models = response.data?.models || {};
 
-  const handleClearResults = () => {
-    const nextCache = { ...cache };
-    delete nextCache[selectedModel];
-    persistCache(nextCache);
-    const nextCleared = { ...clearedModels, [selectedModel]: true };
-    persistClearedModels(nextCleared);
-    setMetrics(null);
-    setDatasetInfo(null);
-    setError(null);
+      const nextCache = { ...cache };
+      const nextOutputs = { ...runOutputs };
+
+      ['xgboost', 'gnn', 'stacked_hybrid'].forEach((modelKey) => {
+        if (models[modelKey]?.metrics) {
+          nextCache[modelKey] = {
+            metrics: models[modelKey].metrics,
+            source: 'run-baseline-suite',
+          };
+        }
+        if (models[modelKey]) {
+          nextOutputs[modelKey] = {
+            ...models[modelKey],
+            ran_at: response.data?.ran_at,
+          };
+        }
+      });
+
+      persistCache(nextCache);
+      persistRunOutputs(nextOutputs);
+
+      if (nextCache[selectedModel]?.metrics) {
+        setMetrics(nextCache[selectedModel].metrics);
+      }
+    } catch (err) {
+      console.error('Error running baseline suite:', err);
+      setError('Failed to run baseline model scripts from the UI. Please check backend logs.');
+    } finally {
+      setRunningSuite(false);
+    }
   };
 
   if (loading && !metrics) {
@@ -138,17 +113,7 @@ export default function ModelComparison() {
   if (!metrics) {
     return (
       <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
-        <div className="p-4 text-center text-gray-500">No saved visuals for this model. Click "Run Real Model Evaluation" to populate them.</div>
-        <div className="mt-4 flex gap-3 justify-center">
-          <button
-            onClick={handleRunModel}
-            disabled={runningModel}
-            className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-lg transition-colors disabled:bg-blue-300"
-          >
-            <RefreshCw size={16} className={runningModel ? 'animate-spin' : ''} />
-            {runningModel ? 'Running Model Script...' : 'Run Real Model Evaluation'}
-          </button>
-        </div>
+        <div className="p-4 text-center text-gray-500">No baseline metrics are available for this model.</div>
       </div>
     );
   }
@@ -157,6 +122,7 @@ export default function ModelComparison() {
   const casesCaught = metrics.cases_caught || [];
   const casesMissed = metrics.cases_missed || [];
   const breakdown = metrics.per_case_breakdown || [];
+  const selectedOutput = runOutputs[selectedModel];
 
   return (
     <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
@@ -166,11 +132,6 @@ export default function ModelComparison() {
         </div>
       )}
 
-      {datasetInfo && (
-        <div className="mb-4 rounded-lg border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-900">
-          <strong>Active dataset:</strong> {datasetInfo.source_name || 'current upload'} • {datasetInfo.row_count || 0} rows
-        </div>
-      )}
       {/* Model Selection Tabs */}
       <div className="flex gap-2 mb-6 border-b pb-4">
         {['xgboost', 'gnn', 'stacked_hybrid'].map((model) => (
@@ -188,25 +149,30 @@ export default function ModelComparison() {
         ))}
       </div>
 
-      {/* Run Real Model Button */}
-      <div className="mb-6">
-        <div className="flex gap-3">
-          <button
-            onClick={handleRunModel}
-            disabled={runningModel}
-            className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-lg transition-colors disabled:bg-blue-300"
-          >
-            <RefreshCw size={16} className={runningModel ? 'animate-spin' : ''} />
-            {runningModel ? 'Running Model Script...' : 'Run Real Model Evaluation'}
-          </button>
-          <button
-            onClick={handleClearResults}
-            className="px-4 py-2 bg-gray-100 hover:bg-gray-200 text-gray-800 font-medium rounded-lg transition-colors"
-          >
-            Clear Visuals
-          </button>
-        </div>
+      <div className="mb-6 flex items-center gap-3">
+        <button
+          onClick={handleRunAllBaselineModels}
+          disabled={runningSuite}
+          className="inline-flex items-center gap-2 rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-blue-300"
+        >
+          <RefreshCw size={16} className={runningSuite ? 'animate-spin' : ''} />
+          {runningSuite ? 'Running All Models...' : 'Run All Baseline Models'}
+        </button>
+        <span className="text-xs text-gray-500">Runs baseline_xgboost.py, evaluate_gnn.py, and stacked_hybrid.py from the UI</span>
       </div>
+
+      {selectedOutput && (
+        <div className="mb-8 rounded-lg border border-slate-200 bg-slate-50 p-4">
+          <div className="mb-2 flex flex-wrap items-center gap-3 text-sm">
+            <span className="font-semibold text-slate-800">Script status: {selectedOutput.script_status || 'n/a'}</span>
+            {selectedOutput.ran_at && <span className="text-slate-600">Last run: {selectedOutput.ran_at}</span>}
+          </div>
+          <p className="mb-2 text-xs text-slate-600">Command: {selectedOutput.expected_cli_command}</p>
+          <pre className="max-h-56 overflow-auto rounded border border-slate-200 bg-white p-3 text-xs text-slate-800 whitespace-pre-wrap">
+            {selectedOutput.cli_output || selectedOutput.output_preview || 'No CLI output captured yet for this model.'}
+          </pre>
+        </div>
+      )}
 
       {/* Model Name & Description */}
       <div className="mb-6">
